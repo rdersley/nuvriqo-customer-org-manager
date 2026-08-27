@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-lint:
+    runs-on: ubuntu-latest
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Custom UI
+        run: npm run build
+
+      - name: Install Forge CLI
+        if: env.FORGE_EMAIL != '' && env.FORGE_API_TOKEN != ''
+        run: npm install --global @forge/cli
+
+      - name: Forge lint
+        if: env.FORGE_EMAIL != '' && env.FORGE_API_TOKEN != ''
+        run: |
+          forge settings set usage-analytics false
+          forge settings set default-environment development
+          forge lint
+
+      - name: Note missing Forge credentials
+        if: env.FORGE_EMAIL == '' || env.FORGE_API_TOKEN == ''
+        run: echo "Forge credentials not configured; build passed but forge lint was skipped."
