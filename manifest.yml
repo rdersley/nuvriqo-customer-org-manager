@@ -1,0 +1,32 @@
+modules:
+  jira:adminPage:
+    - key: nuvriqo-customer-org-manager-admin
+      resource: main
+      resolver:
+        function: resolver
+      title: Customer & Organisation Manager
+      layout: blank
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main
+    path: static/dist
+permissions:
+  scopes:
+    - storage:app
+    - read:servicedesk-request
+    - manage:servicedesk-customer
+    - read:user:jira
+    - read:organization:jira-service-management
+    - write:organization:jira-service-management
+    - write:organization.profile:jira-service-management
+    - read:customer:jira-service-management
+    - write:customer:jira-service-management
+    - read:customer.profile:jira-service-management
+    - write:customer.profile:jira-service-management
+    - read:task:jira-service-management
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/ef946f9f-5a25-47d1-96ca-b1a11530f57c
