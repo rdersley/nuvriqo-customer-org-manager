@@ -29,16 +29,35 @@ jobs:
       - name: Build Custom UI
         run: npm run build
 
+      - name: Record dependency audit
+        shell: bash
+        run: |
+          echo "## Dependency audit" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Root" >> "$GITHUB_STEP_SUMMARY"
+          npm audit --omit=dev || true
+          echo "### Custom UI" >> "$GITHUB_STEP_SUMMARY"
+          npm --prefix static audit --omit=dev || true
+
       - name: Install Forge CLI
         if: env.FORGE_EMAIL != '' && env.FORGE_API_TOKEN != ''
         run: npm install --global @forge/cli
 
       - name: Forge lint
         if: env.FORGE_EMAIL != '' && env.FORGE_API_TOKEN != ''
+        shell: bash
         run: |
           forge settings set usage-analytics false
           forge settings set default-environment development
-          forge lint
+          set +e
+          forge lint 2>&1 | tee /tmp/forge-lint.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if grep -q "UserNotFoundError" /tmp/forge-lint.log; then
+            echo "## Forge access blocker" >> "$GITHUB_STEP_SUMMARY"
+            echo "The configured CI Forge identity is valid but does not have access to app ef946f9f-5a25-47d1-96ca-b1a11530f57c (Customer & Organisation Manager)." >> "$GITHUB_STEP_SUMMARY"
+            echo "Add the CI Forge account as an owner/contributor for this app in the Atlassian Developer Console, then rerun CI." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
 
       - name: Note missing Forge credentials
         if: env.FORGE_EMAIL == '' || env.FORGE_API_TOKEN == ''
