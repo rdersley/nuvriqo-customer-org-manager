@@ -28,9 +28,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+      - name: Build
+        run: npm run build
       - name: Forge lint
         env:
           FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
@@ -42,6 +45,14 @@ jobs:
           forge settings set usage-analytics false
           forge settings set default-environment development
           forge lint
+      - name: Build evidence summary
+        if: always()
+        run: |
+          echo "## Gate 1 — Build evidence" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Node: $(node --version)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- npm: $(npm --version)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dependency mode: $([ -f package-lock.json ] && echo lockfile || echo package.json)" >> "$GITHUB_STEP_SUMMARY"
 
   deploy-development:
     name: Development deploy
@@ -57,8 +68,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
       - run: npm run build
       - run: npm install --global @forge/cli
       - name: Deploy
@@ -80,12 +93,14 @@ jobs:
       NUVRIQO_SITE: nuvriqo.atlassian.net
     steps:
       - name: Verify Jira TEST project
+        shell: bash
         run: |
           test -n "$JIRA_EMAIL" || (echo "Missing JIRA_EMAIL" && exit 1)
           test -n "$JIRA_API_TOKEN" || (echo "Missing JIRA_API_TOKEN" && exit 1)
           code=$(curl -sS -o /tmp/project.json -w "%{http_code}" -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "https://$NUVRIQO_SITE/rest/api/3/project/TEST")
+          echo "HTTP $code"
           test "$code" = "200" || (cat /tmp/project.json && exit 1)
-          echo "Jira TEST project reachable"
+          echo "Jira TEST project reachable" >> "$GITHUB_STEP_SUMMARY"
 
   release-summary:
     name: Release gate summary
@@ -102,4 +117,5 @@ jobs:
           echo "| Development deploy | ${{ needs.deploy-development.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Smoke QA | ${{ needs.smoke.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo "Documentation, Marketplace and Commercial gates remain explicit release checks until they are backed by machine-verifiable evidence." >> "$GITHUB_STEP_SUMMARY"
