@@ -1,0 +1,105 @@
+name: Nuvriqo Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to development and upgrade installation
+        required: true
+        type: boolean
+        default: true
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuvriqo-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Gate 1 - Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Forge lint
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "Missing FORGE_EMAIL" && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "Missing FORGE_API_TOKEN" && exit 1)
+          npm install --global @forge/cli
+          forge settings set usage-analytics false
+          forge settings set default-environment development
+          forge lint
+
+  deploy-development:
+    name: Development deploy
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+    runs-on: ubuntu-latest
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+      NUVRIQO_SITE: nuvriqo.atlassian.net
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm install --global @forge/cli
+      - name: Deploy
+        run: |
+          forge settings set usage-analytics false
+          forge settings set default-environment development
+          forge deploy --environment development --non-interactive
+      - name: Upgrade development installation
+        run: forge install --upgrade --site "$NUVRIQO_SITE" --product jira --environment development --confirm-scopes --non-interactive
+
+  smoke:
+    name: Gate 3 - Smoke QA
+    needs: deploy-development
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+    runs-on: ubuntu-latest
+    env:
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      NUVRIQO_SITE: nuvriqo.atlassian.net
+    steps:
+      - name: Verify Jira TEST project
+        run: |
+          test -n "$JIRA_EMAIL" || (echo "Missing JIRA_EMAIL" && exit 1)
+          test -n "$JIRA_API_TOKEN" || (echo "Missing JIRA_API_TOKEN" && exit 1)
+          code=$(curl -sS -o /tmp/project.json -w "%{http_code}" -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "https://$NUVRIQO_SITE/rest/api/3/project/TEST")
+          test "$code" = "200" || (cat /tmp/project.json && exit 1)
+          echo "Jira TEST project reachable"
+
+  release-summary:
+    name: Release gate summary
+    needs: [build, deploy-development, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        run: |
+          echo "# Nuvriqo release gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Gate | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Development deploy | ${{ needs.deploy-development.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Smoke QA | ${{ needs.smoke.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Documentation, Marketplace and Commercial gates remain explicit release checks until they are backed by machine-verifiable evidence." >> "$GITHUB_STEP_SUMMARY"
