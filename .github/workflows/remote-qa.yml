@@ -35,9 +35,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       - name: Build Custom UI
         run: npm run build
       - name: Forge lint
@@ -61,7 +60,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Check Forge credentials
         shell: bash
         run: |
@@ -69,7 +67,7 @@ jobs:
           test -n "$FORGE_API_TOKEN" || (echo "Missing FORGE_API_TOKEN secret" && exit 1)
       - name: Install dependencies and Forge CLI
         run: |
-          npm ci
+          npm install
           npm install --global @forge/cli
           forge settings set usage-analytics false
           forge settings set default-environment "${{ inputs.environment }}"
