@@ -82,3 +82,12 @@ export function analyseRows(rows) {
     invalid: analysed.filter((row) => !row.valid).length
   };
 }
+
+function csvCell(value) {
+  const text = String(value ?? '');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+export function toIssueCsv(issues) {
+  return ['Row,Issue', ...(issues || []).map((issue) => `${csvCell(issue.row)},${csvCell(issue.message)}`)].join('\n');
+}
