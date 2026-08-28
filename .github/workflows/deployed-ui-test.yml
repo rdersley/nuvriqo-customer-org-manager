@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - name: Check test configuration
         shell: bash
         env:
@@ -32,7 +31,6 @@ jobs:
         run: |
           test -n "$JIRA_BASE_URL" || (echo "Missing JIRA_BASE_URL" && exit 1)
           test -n "$JIRA_STORAGE_STATE_GZIP_B64" || (echo "Missing JIRA_STORAGE_STATE_GZIP_B64" && exit 1)
-      - run: npm ci
       - run: npm install --no-save @playwright/test
       - run: npx playwright install --with-deps chromium
       - name: Restore Jira session
