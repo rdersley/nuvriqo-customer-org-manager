@@ -5,7 +5,8 @@
   "scripts": {
     "postinstall": "npm --prefix static install",
     "build": "npm --prefix static run build",
-    "install:ui": "npm --prefix static install"
+    "install:ui": "npm --prefix static install",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@forge/api": "^5.0.0",
