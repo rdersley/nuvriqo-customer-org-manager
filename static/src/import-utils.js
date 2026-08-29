@@ -83,9 +83,31 @@ export function analyseRows(rows) {
   };
 }
 
+export function planImportRows(rows, existingEmails = [], mode = 'create-new') {
+  const existing = new Set(existingEmails.map((email) => String(email || '').trim().toLowerCase()).filter(Boolean));
+  const planned = rows.map((row) => {
+    if (!row.valid) return { ...row, existsInJira: false, action: 'INVALID', eligible: false };
+    const existsInJira = existing.has(String(row.email || '').trim().toLowerCase());
+    let action = 'SKIP';
+    if (mode === 'upsert') action = existsInJira ? 'UPDATE' : 'CREATE';
+    if (mode === 'create-new') action = existsInJira ? 'SKIP' : 'CREATE';
+    if (mode === 'update-existing') action = existsInJira ? 'UPDATE' : 'SKIP';
+    return { ...row, existsInJira, action, eligible: action === 'CREATE' || action === 'UPDATE' };
+  });
+  return {
+    rows: planned,
+    create: planned.filter((row) => row.action === 'CREATE').length,
+    update: planned.filter((row) => row.action === 'UPDATE').length,
+    skip: planned.filter((row) => row.action === 'SKIP').length,
+    invalid: planned.filter((row) => row.action === 'INVALID').length,
+    eligible: planned.filter((row) => row.eligible).length
+  };
+}
+
 function csvCell(value) {
   const text = String(value ?? '');
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  if (!/[",\n\r]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 export function toIssueCsv(issues) {
