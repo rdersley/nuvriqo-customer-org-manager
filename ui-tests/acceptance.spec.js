@@ -13,31 +13,52 @@ async function expectHealthy(page) {
   await expect(page.locator('body')).not.toContainText(fatalError);
 }
 
+async function openManager(page) {
+  await page.goto(`${baseUrl()}/jira/settings/apps`, { waitUntil: 'domcontentloaded' });
+  await expectHealthy(page);
+  const appEntry = page.getByText('Customer & Organisation Manager', { exact: true }).first();
+  await expect(appEntry).toBeVisible({ timeout: 25000 });
+  await appEntry.click();
+  await page.waitForLoadState('domcontentloaded');
+  await expectHealthy(page);
+}
+
 test('authenticated Jira administration surface is reachable', async ({ page }) => {
   await page.goto(`${baseUrl()}/jira/settings/apps`, { waitUntil: 'domcontentloaded' });
   await expectHealthy(page);
   await expect(page).not.toHaveURL(/login|id\.atlassian/i);
 });
 
-test('Customer & Organisation Manager entry opens when exposed in app settings', async ({ page }) => {
+test('Customer & Organisation Manager is exposed in Jira app settings', async ({ page }) => {
   await page.goto(`${baseUrl()}/jira/settings/apps`, { waitUntil: 'domcontentloaded' });
   await expectHealthy(page);
-
-  const appEntry = page.getByText('Customer & Organisation Manager', { exact: true }).first();
-  if (await appEntry.count()) {
-    await appEntry.click();
-    await page.waitForLoadState('domcontentloaded');
-    await expectHealthy(page);
-    await expect(page.locator('body')).toContainText(/Customer|Organisation/i);
-  } else {
-    // The Forge admin module may be nested under an Apps submenu depending on Jira navigation rollout.
-    // Keep this as a healthy authenticated-admin assertion rather than a brittle URL dependency.
-    await expect(page.locator('body')).toContainText(/Apps|Manage apps|Settings/i);
-  }
+  await expect(page.getByText('Customer & Organisation Manager', { exact: true }).first()).toBeVisible({ timeout: 25000 });
 });
 
-test('admin surface remains usable at compact desktop width', async ({ page }) => {
+test('Customer & Organisation Manager opens to its administration UI', async ({ page }) => {
+  await openManager(page);
+  await expect(page.locator('body')).toContainText(/Customer/i);
+  await expect(page.locator('body')).toContainText(/Organisation/i);
+});
+
+test('manager UI exposes usable administration controls', async ({ page }) => {
+  await openManager(page);
+  const controls = page.locator('button, input, select, textarea, [role="button"], [role="combobox"]');
+  expect(await controls.count()).toBeGreaterThan(0);
+});
+
+test('manager remains healthy at compact desktop width', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.goto(`${baseUrl()}/jira/settings/apps`, { waitUntil: 'domcontentloaded' });
+  await openManager(page);
+  const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+});
+
+test('manager keeps authenticated Jira state after reload', async ({ page }) => {
+  await openManager(page);
+  const before = page.url();
+  await page.reload({ waitUntil: 'domcontentloaded' });
   await expectHealthy(page);
+  await expect(page).not.toHaveURL(/login|id\.atlassian/i);
+  expect(page.url()).toBe(before);
 });
