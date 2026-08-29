@@ -17,7 +17,7 @@ async function jsonResponse(response) {
   return body;
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.2.0' }));
+resolver.define('health', async () => ({ ok: true, version: '0.3.0' }));
 
 resolver.define('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -29,9 +29,7 @@ resolver.define('getCustomers', async ({ payload }) => {
   const query = String(payload?.query || '');
   const start = Number(payload?.start || 0);
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
-  const res = await api.asUser().requestJira(
-    route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`
-  );
+  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`);
   return jsonResponse(res);
 });
 
@@ -41,19 +39,11 @@ resolver.define('checkExistingCustomers', async ({ payload }) => {
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
   if (!requestedEmails.length) return { existingEmails: [], scanned: 0, truncated: false };
   if (requestedEmails.length > 5000) throw new Error('Existing-customer check accepts at most 5000 email addresses');
-
-  const wanted = new Set(requestedEmails);
-  const found = new Set();
-  let start = 0;
-  let scanned = 0;
-  let truncated = false;
-
+  const wanted = new Set(requestedEmails), found = new Set();
+  let start = 0, scanned = 0, truncated = false;
   for (let page = 0; page < 100; page += 1) {
-    const res = await api.asUser().requestJira(
-      route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`
-    );
-    const body = await jsonResponse(res);
-    const values = body.values || [];
+    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`);
+    const body = await jsonResponse(res), values = body.values || [];
     scanned += values.length;
     for (const customer of values) {
       const email = String(customer.emailAddress || customer.email || '').trim().toLowerCase();
@@ -63,7 +53,6 @@ resolver.define('checkExistingCustomers', async ({ payload }) => {
     start += body.limit || 50;
     if (page === 99) truncated = true;
   }
-
   return { existingEmails: [...found], scanned, truncated };
 });
 
@@ -76,18 +65,13 @@ resolver.define('getOrganizations', async ({ payload }) => {
 resolver.define('createOrganization', async ({ payload }) => {
   const name = String(payload?.name || '').trim();
   if (!name) throw new Error('Organisation name is required');
-  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ name })
-  });
+  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ name }) });
   return jsonResponse(res);
 });
 
 resolver.define('prepareImportOrganizations', async ({ payload }) => {
   const names = [...new Set((payload?.names || []).map(v => String(v || '').trim()).filter(Boolean))];
   if (!names.length) return { organizations: [], created: [] };
-
   const existing = [];
   let start = 0;
   for (let page = 0; page < 20; page += 1) {
@@ -97,21 +81,40 @@ resolver.define('prepareImportOrganizations', async ({ payload }) => {
     if (body.isLastPage || !(body.values || []).length) break;
     start += body.limit || 50;
   }
-
-  const byName = new Map(existing.map(o => [String(o.name).toLowerCase(), o]));
-  const created = [];
+  const byName = new Map(existing.map(o => [String(o.name).toLowerCase(), o])), created = [];
   for (const name of names) {
     if (byName.has(name.toLowerCase())) continue;
-    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ name })
-    });
+    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ name }) });
     const org = await jsonResponse(res);
-    byName.set(name.toLowerCase(), org);
-    created.push(org);
+    byName.set(name.toLowerCase(), org); created.push(org);
   }
   return { organizations: [...byName.values()].filter(o => names.some(n => n.toLowerCase() === String(o.name).toLowerCase())), created };
+});
+
+resolver.define('bulkOrganizationMembership', async ({ payload }) => {
+  const organizationId = Number(payload?.organizationId);
+  const action = String(payload?.action || '');
+  const accountIds = [...new Set((payload?.accountIds || []).map(v => String(v || '').trim()).filter(Boolean))];
+  if (!Number.isFinite(organizationId)) throw new Error('Valid organizationId is required');
+  if (!['add', 'remove'].includes(action)) throw new Error('Action must be add or remove');
+  if (!accountIds.length) throw new Error('At least one accountId is required');
+  if (accountIds.length > 100) throw new Error('Bulk organisation action accepts at most 100 customers per request');
+  const method = action === 'add' ? 'POST' : 'DELETE';
+  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization/${organizationId}/user`, {
+    method,
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ accountIds })
+  });
+  await jsonResponse(res);
+  const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  const history = { id, createdAt: new Date().toISOString(), type: 'ORGANIZATION_MEMBERSHIP', action, organizationId, count: accountIds.length, accountIds };
+  await kvs.set(`bulk:${history.createdAt}:${id}`, history);
+  return { ok: true, ...history };
+});
+
+resolver.define('getBulkHistory', async () => {
+  const result = await kvs.query().where('key', WhereConditions.beginsWith('bulk:')).limit(50).getMany();
+  return (result.results || []).map(r => r.value).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 
 resolver.define('getTaskStatus', async ({ payload }) => {
@@ -127,12 +130,9 @@ resolver.define('getImportHistory', async () => {
 });
 
 resolver.define('validateImport', async ({ payload }) => {
-  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-  const seen = new Set();
-  const errors = [];
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [], seen = new Set(), errors = [];
   rows.forEach((row, index) => {
-    const email = String(row.email || '').trim().toLowerCase();
-    const displayName = String(row.displayName || row.fullName || '').trim();
+    const email = String(row.email || '').trim().toLowerCase(), displayName = String(row.displayName || row.fullName || '').trim();
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) errors.push({ row: index + 2, field: 'email', message: 'Valid email required' });
     if (!displayName) errors.push({ row: index + 2, field: 'displayName', message: 'Display name required' });
     if (email && seen.has(email)) errors.push({ row: index + 2, field: 'email', message: 'Duplicate email in file' });
@@ -145,38 +145,16 @@ resolver.define('bulkUpsertCustomers', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   if (!rows.length) throw new Error('No rows supplied');
   if (rows.length > 100) throw new Error('This operation accepts at most 100 rows per request');
-
   const customerProfiles = rows.map((row) => {
-    const p = {
-      email: String(row.email || '').trim(),
-      displayName: String(row.displayName || row.fullName || '').trim()
-    };
-    const organizationIds = (row.organizationIds || [])
-      .map(Number)
-      .filter(Number.isFinite);
+    const p = { email: String(row.email || '').trim(), displayName: String(row.displayName || row.fullName || '').trim() };
+    const organizationIds = (row.organizationIds || []).map(Number).filter(Number.isFinite);
     if (organizationIds.length) p.associateOrganizations = { organizationIds };
     return { operationType: 'UPSERT', payload: p };
   });
-
   const idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-  const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'Idempotency-Key': idempotencyKey
-    },
-    body: JSON.stringify({ customerProfiles })
-  });
+  const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ customerProfiles }) });
   const task = await jsonResponse(res);
-  const history = {
-    id: idempotencyKey,
-    taskId: task.id,
-    statusUrl: task.statusUrl,
-    count: rows.length,
-    createdAt: new Date().toISOString(),
-    type: 'CUSTOMER_PROFILE_UPSERT'
-  };
+  const history = { id: idempotencyKey, taskId: task.id, statusUrl: task.statusUrl, count: rows.length, createdAt: new Date().toISOString(), type: 'CUSTOMER_PROFILE_UPSERT' };
   await kvs.set(`import:${history.createdAt}:${history.id}`, history);
   return task;
 });
