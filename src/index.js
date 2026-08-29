@@ -17,7 +17,7 @@ async function jsonResponse(response) {
   return body;
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.2' }));
+resolver.define('health', async () => ({ ok: true, version: '0.2.0' }));
 
 resolver.define('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -33,6 +33,38 @@ resolver.define('getCustomers', async ({ payload }) => {
     route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`
   );
   return jsonResponse(res);
+});
+
+resolver.define('checkExistingCustomers', async ({ payload }) => {
+  const serviceDeskId = String(payload?.serviceDeskId || '');
+  const requestedEmails = [...new Set((payload?.emails || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))];
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+  if (!requestedEmails.length) return { existingEmails: [], scanned: 0, truncated: false };
+  if (requestedEmails.length > 5000) throw new Error('Existing-customer check accepts at most 5000 email addresses');
+
+  const wanted = new Set(requestedEmails);
+  const found = new Set();
+  let start = 0;
+  let scanned = 0;
+  let truncated = false;
+
+  for (let page = 0; page < 100; page += 1) {
+    const res = await api.asUser().requestJira(
+      route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`
+    );
+    const body = await jsonResponse(res);
+    const values = body.values || [];
+    scanned += values.length;
+    for (const customer of values) {
+      const email = String(customer.emailAddress || customer.email || '').trim().toLowerCase();
+      if (email && wanted.has(email)) found.add(email);
+    }
+    if (found.size === wanted.size || body.isLastPage || !values.length) break;
+    start += body.limit || 50;
+    if (page === 99) truncated = true;
+  }
+
+  return { existingEmails: [...found], scanned, truncated };
 });
 
 resolver.define('getOrganizations', async ({ payload }) => {
