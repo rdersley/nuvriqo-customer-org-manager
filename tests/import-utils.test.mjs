@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyseRows, mapRows, parseCsv, suggestMapping, toIssueCsv } from '../static/src/import-utils.js';
+import { analyseRows, mapRows, parseCsv, planImportRows, suggestMapping, toIssueCsv } from '../static/src/import-utils.js';
 
 test('parses quoted CSV values and preserves row numbers', () => {
   const parsed = parseCsv('Email,Full Name,Organisation\n"a@example.com","Doe, Jane","Example Ltd"');
@@ -43,4 +43,42 @@ test('detects duplicate, invalid email and missing name rows', () => {
 test('creates a downloadable row-level issue CSV', () => {
   const csv = toIssueCsv([{ row: 4, message: 'Display name required' }]);
   assert.equal(csv, 'Row,Issue\n4,Display name required');
+});
+
+test('create-new mode creates new customers and skips existing customers', () => {
+  const rows = [
+    { rowNumber: 2, email: 'new@example.com', displayName: 'New', valid: true },
+    { rowNumber: 3, email: 'existing@example.com', displayName: 'Existing', valid: true }
+  ];
+  const plan = planImportRows(rows, ['EXISTING@example.com'], 'create-new');
+  assert.equal(plan.create, 1);
+  assert.equal(plan.update, 0);
+  assert.equal(plan.skip, 1);
+  assert.equal(plan.eligible, 1);
+  assert.equal(plan.rows[1].action, 'SKIP');
+});
+
+test('update-existing mode only updates customers already in Jira', () => {
+  const rows = [
+    { rowNumber: 2, email: 'new@example.com', displayName: 'New', valid: true },
+    { rowNumber: 3, email: 'existing@example.com', displayName: 'Existing', valid: true }
+  ];
+  const plan = planImportRows(rows, ['existing@example.com'], 'update-existing');
+  assert.equal(plan.create, 0);
+  assert.equal(plan.update, 1);
+  assert.equal(plan.skip, 1);
+  assert.equal(plan.rows[1].action, 'UPDATE');
+});
+
+test('upsert mode explicitly creates new and updates existing customers', () => {
+  const rows = [
+    { rowNumber: 2, email: 'new@example.com', displayName: 'New', valid: true },
+    { rowNumber: 3, email: 'existing@example.com', displayName: 'Existing', valid: true },
+    { rowNumber: 4, email: 'bad', displayName: '', valid: false }
+  ];
+  const plan = planImportRows(rows, ['existing@example.com'], 'upsert');
+  assert.equal(plan.create, 1);
+  assert.equal(plan.update, 1);
+  assert.equal(plan.invalid, 1);
+  assert.equal(plan.eligible, 2);
 });
