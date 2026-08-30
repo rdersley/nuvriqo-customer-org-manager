@@ -17,14 +17,31 @@ async function jsonResponse(response) {
   return body;
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.2' }));
+async function requireAdmin() {
+  const res = await api.asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`);
+  const body = await jsonResponse(res);
+  if (!body?.permissions?.ADMINISTER?.havePermission) {
+    const error = new Error('Jira administrator permission is required to use Customer & Organisation Manager.');
+    error.status = 403;
+    throw error;
+  }
+}
 
-resolver.define('getServiceDesks', async () => {
+function secureDefine(name, handler) {
+  resolver.define(name, async (request) => {
+    await requireAdmin();
+    return handler(request);
+  });
+}
+
+resolver.define('health', async () => ({ ok: true, version: '0.1.3' }));
+
+secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
   return jsonResponse(res);
 });
 
-resolver.define('getCustomers', async ({ payload }) => {
+secureDefine('getCustomers', async ({ payload }) => {
   const serviceDeskId = String(payload?.serviceDeskId || '');
   const query = String(payload?.query || '');
   const start = Number(payload?.start || 0);
@@ -35,13 +52,13 @@ resolver.define('getCustomers', async ({ payload }) => {
   return jsonResponse(res);
 });
 
-resolver.define('getOrganizations', async ({ payload }) => {
+secureDefine('getOrganizations', async ({ payload }) => {
   const start = Number(payload?.start || 0);
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
   return jsonResponse(res);
 });
 
-resolver.define('createOrganization', async ({ payload }) => {
+secureDefine('createOrganization', async ({ payload }) => {
   const name = String(payload?.name || '').trim();
   if (!name) throw new Error('Organisation name is required');
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
@@ -52,7 +69,7 @@ resolver.define('createOrganization', async ({ payload }) => {
   return jsonResponse(res);
 });
 
-resolver.define('prepareImportOrganizations', async ({ payload }) => {
+secureDefine('prepareImportOrganizations', async ({ payload }) => {
   const names = [...new Set((payload?.names || []).map(v => String(v || '').trim()).filter(Boolean))];
   if (!names.length) return { organizations: [], created: [] };
 
@@ -82,19 +99,19 @@ resolver.define('prepareImportOrganizations', async ({ payload }) => {
   return { organizations: [...byName.values()].filter(o => names.some(n => n.toLowerCase() === String(o.name).toLowerCase())), created };
 });
 
-resolver.define('getTaskStatus', async ({ payload }) => {
+secureDefine('getTaskStatus', async ({ payload }) => {
   const taskId = String(payload?.taskId || '');
   if (!taskId) throw new Error('taskId is required');
   const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/tasks/${taskId}`);
   return jsonResponse(res);
 });
 
-resolver.define('getImportHistory', async () => {
+secureDefine('getImportHistory', async () => {
   const result = await kvs.query().where('key', WhereConditions.beginsWith('import:')).limit(50).getMany();
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 
-resolver.define('validateImport', async ({ payload }) => {
+secureDefine('validateImport', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const seen = new Set();
   const errors = [];
@@ -109,7 +126,7 @@ resolver.define('validateImport', async ({ payload }) => {
   return { total: rows.length, valid: Math.max(0, rows.length - new Set(errors.map(e => e.row)).size), errors };
 });
 
-resolver.define('bulkUpsertCustomers', async ({ payload }) => {
+secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   if (!rows.length) throw new Error('No rows supplied');
   if (rows.length > 100) throw new Error('This operation accepts at most 100 rows per request');
