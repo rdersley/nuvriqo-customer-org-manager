@@ -26,10 +26,14 @@ function App(){
   const [desk,setDesk]=useState('');
   const [customers,setCustomers]=useState([]);
   const [orgs,setOrgs]=useState([]);
+  const [customerQuery,setCustomerQuery]=useState('');
+  const [orgQuery,setOrgQuery]=useState('');
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
   const [rows,setRows]=useState([]);
   const [validation,setValidation]=useState(null);
+  const [preview,setPreview]=useState([]);
+  const [previewing,setPreviewing]=useState(false);
   const [importStatus,setImportStatus]=useState(null);
   const [history,setHistory]=useState([]);
 
@@ -38,21 +42,50 @@ function App(){
   useEffect(()=>{ if(tab==='Customers' && desk) loadCustomers(); },[tab,desk]);
   useEffect(()=>{ if(tab==='Import History') loadHistory(); },[tab]);
 
-  async function loadCustomers(){ setLoading(true);setError('');try{const r=await invoke('getCustomers',{serviceDeskId:desk});setCustomers(r.values||[]);}catch(e){setError(e.message);}finally{setLoading(false);} }
+  async function loadCustomers(query=customerQuery){ setLoading(true);setError('');try{const r=await invoke('getCustomers',{serviceDeskId:desk,query});setCustomers(r.values||[]);}catch(e){setError(e.message);}finally{setLoading(false);} }
   async function loadOrgs(){ setLoading(true);setError('');try{const r=await invoke('getOrganizations');setOrgs(r.values||[]);}catch(e){setError(e.message);}finally{setLoading(false);} }
   async function loadHistory(){ try{ const h=await invoke('getImportHistory'); const enriched=await Promise.all(h.map(async x=>{ try{return {...x, task:await invoke('getTaskStatus',{taskId:x.taskId})};}catch{return x;} })); setHistory(enriched);}catch(e){setError(e.message);} }
-  async function onFile(e){ const f=e.target.files?.[0]; if(!f)return; const parsed=parseCsv(await f.text()); setRows(parsed); setValidation(await invoke('validateImport',{rows:parsed})); setImportStatus(null); }
-  async function runImport(){ setLoading(true);setError('');try{ const names=[...new Set(rows.map(r=>r.organisation).filter(Boolean))]; const prepared=await invoke('prepareImportOrganizations',{names}); const allOrgs=[...orgs,...(prepared.organizations||[])]; const orgMap=new Map(allOrgs.map(o=>[String(o.name).toLowerCase(),o.id])); const mapped=rows.filter(r=>r.email&&r.displayName).map(r=>({ ...r, organizationIds: r.organisation && orgMap.has(r.organisation.toLowerCase()) ? [orgMap.get(r.organisation.toLowerCase())] : [] })); const chunks=[]; for(let i=0;i<mapped.length;i+=100) chunks.push(mapped.slice(i,i+100)); const tasks=[]; for(const chunk of chunks) tasks.push(await invoke('bulkUpsertCustomers',{rows:chunk})); setImportStatus({submitted:mapped.length,tasks,createdOrganizations:(prepared.created||[]).length}); } catch(e){setError(e.message);}finally{setLoading(false);} }
+
+  async function buildPreview(parsed, validationResult){
+    if(!desk || !parsed.length) { setPreview([]); return; }
+    setPreviewing(true); setError('');
+    try{
+      let currentOrgs=orgs;
+      if(!currentOrgs.length){ const r=await invoke('getOrganizations'); currentOrgs=r.values||[]; setOrgs(currentOrgs); }
+      const orgNames=new Set(currentOrgs.map(o=>String(o.name||'').toLowerCase()));
+      const invalidRows=new Map();
+      (validationResult?.errors||[]).forEach(e=>{ const idx=e.row-2; if(!invalidRows.has(idx)) invalidRows.set(idx,[]); invalidRows.get(idx).push(e.message); });
+      const results=[];
+      for(let i=0;i<parsed.length;i+=1){
+        const row=parsed[i];
+        if(invalidRows.has(i)) { results.push({...row,rowNumber:i+2,action:'ERROR',reason:invalidRows.get(i).join('; ')}); continue; }
+        const found=await invoke('getCustomers',{serviceDeskId:desk,query:String(row.email||'').trim()});
+        const exact=(found.values||[]).find(c=>String(c.emailAddress||'').toLowerCase()===String(row.email||'').trim().toLowerCase());
+        const orgNote=row.organisation && !orgNames.has(String(row.organisation).toLowerCase()) ? `Organisation “${row.organisation}” will be created.` : '';
+        if(!exact) results.push({...row,rowNumber:i+2,action:'CREATE',reason:orgNote||'New customer.'});
+        else if(String(exact.displayName||'').trim().toLowerCase()===String(row.displayName||'').trim().toLowerCase()) results.push({...row,rowNumber:i+2,action:'SKIP',reason:orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.'});
+        else results.push({...row,rowNumber:i+2,action:'UPDATE',reason:`Existing Jira customer: ${exact.displayName||exact.emailAddress}. ${orgNote}`.trim()});
+      }
+      setPreview(results);
+    } catch(e){ setError(`Preview failed: ${e.message}`); setPreview([]); }
+    finally{setPreviewing(false);}
+  }
+
+  async function onFile(e){ const f=e.target.files?.[0]; if(!f)return; const parsed=parseCsv(await f.text()); setRows(parsed); const result=await invoke('validateImport',{rows:parsed}); setValidation(result); setImportStatus(null); await buildPreview(parsed,result); }
+
+  async function runImport(){ setLoading(true);setError('');try{ const actionable=preview.length ? preview.filter(r=>r.action==='CREATE'||r.action==='UPDATE') : rows.filter(r=>r.email&&r.displayName); if(!actionable.length) throw new Error('There are no Create or Update rows to import.'); const names=[...new Set(actionable.map(r=>r.organisation).filter(Boolean))]; const prepared=await invoke('prepareImportOrganizations',{names}); const allOrgs=[...orgs,...(prepared.organizations||[])]; const orgMap=new Map(allOrgs.map(o=>[String(o.name).toLowerCase(),o.id])); const mapped=actionable.map(r=>({ ...r, organizationIds: r.organisation && orgMap.has(r.organisation.toLowerCase()) ? [orgMap.get(r.organisation.toLowerCase())] : [] })); const chunks=[]; for(let i=0;i<mapped.length;i+=100) chunks.push(mapped.slice(i,i+100)); const tasks=[]; for(const chunk of chunks) tasks.push(await invoke('bulkUpsertCustomers',{rows:chunk})); setImportStatus({submitted:mapped.length,tasks,createdOrganizations:(prepared.created||[]).length,skipped:preview.filter(r=>r.action==='SKIP').length}); } catch(e){setError(e.message);}finally{setLoading(false);} }
 
   const summary=useMemo(()=>({total:rows.length, valid:validation?.valid||0, errors:validation?.errors?.length||0}),[rows,validation]);
+  const previewSummary=useMemo(()=>preview.reduce((a,r)=>{a[r.action]=(a[r.action]||0)+1;return a;},{CREATE:0,UPDATE:0,SKIP:0,ERROR:0}),[preview]);
+  const filteredOrgs=useMemo(()=>{const q=orgQuery.trim().toLowerCase();return q?orgs.filter(o=>String(o.name||'').toLowerCase().includes(q)):orgs;},[orgs,orgQuery]);
 
   return <div className="app">
     <aside><div className="brand">Nuvriqo</div><div className="product">Customer & Organisation Manager</div>{tabs.map(t=><button key={t} className={tab===t?'active':''} onClick={()=>setTab(t)}>{t}</button>)}</aside>
     <main><header><div><h1>{tab}</h1><p>Bulk customer and organisation administration for Jira Service Management.</p></div>{tab==='Customers'&&<select value={desk} onChange={e=>setDesk(e.target.value)}>{serviceDesks.map(d=><option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}</header>
       {error&&<div className="error">{error}</div>}
-      {tab==='Customers'&&<section className="card"><div className="toolbar"><input placeholder="Search customers (coming next)"/><button onClick={loadCustomers}>Refresh</button></div><table><thead><tr><th>Name</th><th>Email</th><th>Account</th></tr></thead><tbody>{customers.map(c=><tr key={c.accountId||c.key}><td>{c.displayName}</td><td>{c.emailAddress||'—'}</td><td className="muted">{c.accountId||c.key}</td></tr>)}</tbody></table>{!loading&&!customers.length&&<div className="empty">No customers returned for this service project.</div>}</section>}
-      {tab==='Organisations'&&<section className="card"><div className="toolbar"><input placeholder="Search organisations"/><button onClick={loadOrgs}>Refresh</button></div><div className="grid">{orgs.map(o=><div className="org" key={o.id}><strong>{o.name}</strong><span>ID {o.id}</span></div>)}</div></section>}
-      {tab==='Import'&&<><section className="card upload"><h2>Advanced customer import</h2><p>CSV headers supported now: Email, Full Name/Display Name, Organisation.</p><input type="file" accept=".csv,text/csv" onChange={onFile}/></section>{rows.length>0&&<section className="stats"><div><b>{summary.total}</b><span>Rows</span></div><div><b>{summary.valid}</b><span>Ready</span></div><div><b>{summary.errors}</b><span>Errors</span></div></section>}{validation?.errors?.length>0&&<section className="card"><h3>Validation issues</h3>{validation.errors.slice(0,20).map((e,i)=><div className="validation" key={i}>Row {e.row}: {e.message}</div>)}</section>}{rows.length>0&&<button className="primary" disabled={loading||summary.errors>0} onClick={runImport}>{loading?'Submitting…':`Import ${summary.valid} customers`}</button>}{importStatus&&<div className="success">Submitted {importStatus.submitted} customer profiles in {importStatus.tasks.length} bulk task(s). Created {importStatus.createdOrganizations} missing organisation(s).</div>}</>}
+      {tab==='Customers'&&<section className="card"><div className="toolbar"><input value={customerQuery} onChange={e=>setCustomerQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')loadCustomers(e.currentTarget.value)}} placeholder="Search customers by name or email"/><button onClick={()=>loadCustomers(customerQuery)}>Search</button><button onClick={()=>{setCustomerQuery('');loadCustomers('')}}>Reset</button></div><table><thead><tr><th>Name</th><th>Email</th><th>Account</th></tr></thead><tbody>{customers.map(c=><tr key={c.accountId||c.key}><td>{c.displayName}</td><td>{c.emailAddress||'—'}</td><td className="muted">{c.accountId||c.key}</td></tr>)}</tbody></table>{!loading&&!customers.length&&<div className="empty">No customers returned for this service project.</div>}</section>}
+      {tab==='Organisations'&&<section className="card"><div className="toolbar"><input value={orgQuery} onChange={e=>setOrgQuery(e.target.value)} placeholder="Search organisations"/><button onClick={loadOrgs}>Refresh</button></div><div className="grid">{filteredOrgs.map(o=><div className="org" key={o.id}><strong>{o.name}</strong><span>ID {o.id}</span></div>)}</div>{!loading&&!filteredOrgs.length&&<div className="empty">No organisations match your search.</div>}</section>}
+      {tab==='Import'&&<><section className="card upload"><h2>Advanced customer import</h2><p>CSV headers: Email, Full Name/Display Name, Organisation. The preview checks Jira before anything is changed.</p><input type="file" accept=".csv,text/csv" onChange={onFile}/></section>{rows.length>0&&<section className="stats"><div><b>{summary.total}</b><span>Rows</span></div><div><b>{previewSummary.CREATE}</b><span>Create</span></div><div><b>{previewSummary.UPDATE}</b><span>Update</span></div><div><b>{previewSummary.SKIP}</b><span>Skip</span></div><div><b>{previewSummary.ERROR}</b><span>Errors</span></div></section>}{previewing&&<section className="card"><strong>Checking existing Jira customers and organisations…</strong></section>}{preview.length>0&&<section className="card"><h3>Import preview</h3><table><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.map((r,i)=><tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><strong>{r.action}</strong></td><td>{r.displayName||'—'}</td><td>{r.email||'—'}</td><td>{r.organisation||'—'}</td><td>{r.reason}</td></tr>)}</tbody></table></section>}{rows.length>0&&<button className="primary" disabled={loading||previewing||previewSummary.ERROR>0||(previewSummary.CREATE+previewSummary.UPDATE===0)} onClick={runImport}>{loading?'Submitting…':`Import ${previewSummary.CREATE+previewSummary.UPDATE} customer changes`}</button>}{importStatus&&<div className="success">Submitted {importStatus.submitted} customer changes in {importStatus.tasks.length} bulk task(s). Skipped {importStatus.skipped} unchanged row(s). Created {importStatus.createdOrganizations} missing organisation(s).</div>}</>}
       {tab==='Import History'&&<section className="card"><div className="toolbar"><button onClick={loadHistory}>Refresh status</button></div><table><thead><tr><th>Submitted</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map(h=><tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.count}</td><td>{h.task?.status||'Unknown'}</td><td>{h.task?.failures?.length||0}</td><td className="muted">{h.taskId}</td></tr>)}</tbody></table>{!history.length&&<div className="empty">No imports recorded yet.</div>}</section>}
     </main>
   </div>
