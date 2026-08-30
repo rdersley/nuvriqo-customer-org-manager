@@ -64,6 +64,10 @@ jobs:
           fi
           exit "$status"
 
+      - name: Record Forge environments
+        if: env.FORGE_EMAIL != '' && env.FORGE_API_TOKEN != ''
+        run: forge environments list
+
       - name: Report Forge lint failure on PR
         if: failure() && github.event_name == 'pull_request'
         shell: bash
