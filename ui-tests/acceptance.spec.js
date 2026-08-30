@@ -75,8 +75,30 @@ test('large valid CSV is handled without per-row Jira lookup failure', async ({ 
     buffer: Buffer.from(csv.join('\n'))
   });
   await expect(manager.getByRole('heading', { name: 'Large import safety check', exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(manager.locator('body')).toContainText('501 valid rows were detected');
+  await expect(manager.locator('body')).toContainText('501 valid rows will continue');
   await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed/i);
+  await expect(manager.getByRole('button', { name: /Import 0 customer changes/ })).toBeDisabled();
+});
+
+test('large mixed CSV excludes errors while keeping valid rows eligible', async ({ page }) => {
+  const manager = await openManager(page);
+  await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  const csv = ['Email,Full Name,Organisation'];
+  for (let i = 1; i <= 501; i += 1) csv.push(`qa-mixed-${i}@example.invalid,QA Mixed ${i},QA Organisation`);
+  csv.push('not-an-email,Bad Email,QA Organisation');
+  csv.push('qa-mixed-1@example.invalid,Duplicate Email,QA Organisation');
+  await manager.locator('input[type="file"]').setInputFiles({
+    name: 'large-mixed-import-regression.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(csv.join('\n'))
+  });
+  await expect(manager.getByRole('heading', { name: 'Large import safety check', exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(manager.locator('body')).toContainText('501 valid rows will continue');
+  await expect(manager.locator('body')).toContainText('2 error rows will be excluded automatically');
+  await expect(manager.locator('body')).toContainText('2 rows will be excluded from this import');
+  await expect(manager.locator('body')).toContainText(/Valid email required/);
+  await expect(manager.locator('body')).toContainText(/Duplicate email in file/);
+  await expect(manager.locator('body')).not.toContainText(/Import cannot continue|Atlassian API error 412|Preview failed/i);
   await expect(manager.getByRole('button', { name: /Import 0 customer changes/ })).toBeDisabled();
 });
 
