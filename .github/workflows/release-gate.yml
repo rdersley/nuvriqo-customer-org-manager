@@ -87,7 +87,7 @@ jobs:
         run: |
           forge settings set usage-analytics false
           forge settings set default-environment development
-          forge deploy --environment development --non-interactive
+          forge deploy --environment development --approve MAJOR_VERSION_RULE --non-interactive
       - name: Upgrade development installation
         run: forge install --upgrade --site "$NUVRIQO_SITE" --product jira --environment development --confirm-scopes --non-interactive
 
