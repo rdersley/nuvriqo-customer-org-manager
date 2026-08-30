@@ -64,6 +64,22 @@ test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
   await expect(manager.locator('input[type="file"]')).toBeVisible();
 });
 
+test('large valid CSV is handled without per-row Jira lookup failure', async ({ page }) => {
+  const manager = await openManager(page);
+  await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  const csv = ['Email,Full Name,Organisation'];
+  for (let i = 1; i <= 501; i += 1) csv.push(`qa-large-${i}@example.invalid,QA Large ${i},QA Organisation`);
+  await manager.locator('input[type="file"]').setInputFiles({
+    name: 'large-import-regression.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(csv.join('\n'))
+  });
+  await expect(manager.getByRole('heading', { name: 'Large import safety check', exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(manager.locator('body')).toContainText('501 valid rows were detected');
+  await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed/i);
+  await expect(manager.getByRole('button', { name: /Import 0 customer changes/ })).toBeDisabled();
+});
+
 test('manager remains healthy at compact desktop width', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   const manager = await openManager(page);
