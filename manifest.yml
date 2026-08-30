@@ -18,6 +18,7 @@ permissions:
     - read:servicedesk-request
     - manage:servicedesk-customer
     - read:user:jira
+    - read:permission:jira
     - read:organization:jira-service-management
     - write:organization:jira-service-management
     - write:organization.profile:jira-service-management
