@@ -26,19 +26,20 @@ async function openManager(page) {
   await expectHealthy(page);
   await expect(page.getByText(managerName, { exact: true }).first()).toBeVisible({ timeout: 30000 });
 
-  const iframe = page.locator('iframe[data-forge-iframe="true"], iframe[data-testid="hosted-resources-iframe"]').first();
+  const iframeSelector = 'iframe[data-forge-iframe="true"], iframe[data-testid="hosted-resources-iframe"]';
+  const iframe = page.locator(iframeSelector).first();
   await expect(iframe).toBeVisible({ timeout: 30000 });
-  const manager = page.frameLocator('iframe[data-forge-iframe="true"], iframe[data-testid="hosted-resources-iframe"]').first();
-  await expect(manager.getByText('Customers', { exact: true })).toBeVisible({ timeout: 30000 });
+  const manager = page.frameLocator(iframeSelector).first();
+  await expect(manager.getByRole('heading', { name: 'Customers', exact: true })).toBeVisible({ timeout: 30000 });
   return manager;
 }
 
 test('Customer & Organisation Manager opens directly in Jira administration', async ({ page }) => {
   const manager = await openManager(page);
-  await expect(manager.getByText('Customers', { exact: true })).toBeVisible();
-  await expect(manager.getByText('Organisations', { exact: true })).toBeVisible();
-  await expect(manager.getByText('Import', { exact: true })).toBeVisible();
-  await expect(manager.getByText('Import History', { exact: true })).toBeVisible();
+  await expect(manager.getByRole('button', { name: 'Customers', exact: true })).toBeVisible();
+  await expect(manager.getByRole('button', { name: 'Organisations', exact: true })).toBeVisible();
+  await expect(manager.getByRole('button', { name: 'Import', exact: true })).toBeVisible();
+  await expect(manager.getByRole('button', { name: 'Import History', exact: true })).toBeVisible();
 });
 
 test('customer administration exposes working search controls', async ({ page }) => {
@@ -51,22 +52,24 @@ test('customer administration exposes working search controls', async ({ page })
 test('organisation administration exposes search', async ({ page }) => {
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Organisations', exact: true }).click();
+  await expect(manager.getByRole('heading', { name: 'Organisations', exact: true })).toBeVisible();
   await expect(manager.getByPlaceholder('Search organisations')).toBeVisible();
 });
 
 test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  await expect(manager.getByRole('heading', { name: 'Import', exact: true })).toBeVisible();
   await expect(manager.locator('body')).toContainText(/preview checks Jira before anything is changed/i);
   await expect(manager.locator('input[type="file"]')).toBeVisible();
 });
 
 test('manager remains healthy at compact desktop width', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
-  await openManager(page);
-  const dimensions = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    clientWidth: document.documentElement.clientWidth
+  const manager = await openManager(page);
+  const dimensions = await manager.locator('html').evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth
   }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
 });
@@ -77,7 +80,9 @@ test('manager keeps authenticated state after reload', async ({ page }) => {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expectHealthy(page);
   await expect(page.getByText(managerName, { exact: true }).first()).toBeVisible();
-  const iframe = page.locator('iframe[data-forge-iframe="true"], iframe[data-testid="hosted-resources-iframe"]').first();
+  const iframeSelector = 'iframe[data-forge-iframe="true"], iframe[data-testid="hosted-resources-iframe"]';
+  const iframe = page.locator(iframeSelector).first();
   await expect(iframe).toBeVisible({ timeout: 30000 });
+  await expect(page.frameLocator(iframeSelector).first().getByRole('heading', { name: 'Customers', exact: true })).toBeVisible({ timeout: 30000 });
   expect(page.url()).toBe(before);
 });
