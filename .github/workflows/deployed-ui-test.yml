@@ -2,7 +2,7 @@ name: Deployed UI Tests
 
 on:
   push:
-    branches: [release/v1-blocker-fixes]
+    branches: [main, release/v1-blocker-fixes]
   workflow_dispatch:
 
 permissions:
@@ -49,7 +49,7 @@ jobs:
       - name: Install Forge CLI
         run: npm install --global @forge/cli
 
-      - name: Deploy release branch to development
+      - name: Deploy canonical build to development
         shell: bash
         run: |
           forge settings set usage-analytics false
