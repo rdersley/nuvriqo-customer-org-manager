@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   build-and-lint:
@@ -58,6 +59,23 @@ jobs:
             echo "Add the CI Forge account as an owner/contributor for this app in the Atlassian Developer Console, then rerun CI." >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
+
+      - name: Report Forge lint failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -s /tmp/forge-lint.log ]; then
+            {
+              echo '### Forge lint diagnostic'
+              echo
+              echo '```text'
+              tail -n 60 /tmp/forge-lint.log
+              echo '```'
+            } > /tmp/lint-comment.md
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/lint-comment.md
+          fi
 
       - name: Note missing Forge credentials
         if: env.FORGE_EMAIL == '' || env.FORGE_API_TOKEN == ''
