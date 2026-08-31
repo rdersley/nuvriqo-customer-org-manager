@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.5' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.6' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -155,7 +155,7 @@ secureDefine('getTaskStatus', async ({ payload }) => {
 });
 
 secureDefine('getImportHistory', async () => {
-  const result = await kvs.query().where('key', WhereConditions.beginsWith('import:')).limit(50).getMany();
+  const result = await kvs.query().where('key', WhereConditions.beginsWith('import:')).limit(100).getMany();
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 
@@ -191,7 +191,16 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     return { operationType: 'UPSERT', payload: p };
   });
 
-  const idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  const suppliedKey = String(payload?.idempotencyKey || '').trim();
+  const idempotencyKey = suppliedKey || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  if (idempotencyKey.length > 200) throw new Error('Idempotency key is too long');
+
+  const importSessionId = String(payload?.importSessionId || '').trim() || null;
+  const batchNumber = Math.max(1, Number(payload?.batchNumber || 1));
+  const totalBatches = Math.max(batchNumber, Number(payload?.totalBatches || batchNumber));
+  const rowStart = Number(payload?.rowStart || 0) || null;
+  const rowEnd = Number(payload?.rowEnd || 0) || null;
+
   const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, {
     method: 'POST',
     headers: {
@@ -204,14 +213,19 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   const task = await jsonResponse(res);
   const history = {
     id: idempotencyKey,
+    importSessionId,
+    batchNumber,
+    totalBatches,
     taskId: task.id,
     statusUrl: task.statusUrl,
     count: rows.length,
+    rowStart,
+    rowEnd,
     createdAt: new Date().toISOString(),
     type: 'CUSTOMER_PROFILE_UPSERT'
   };
   await kvs.set(`import:${history.createdAt}:${history.id}`, history);
-  return task;
+  return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
 });
 
 export const handler = resolver.getDefinitions();
