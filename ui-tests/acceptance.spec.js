@@ -49,6 +49,24 @@ test('customer administration exposes working search controls', async ({ page })
   await expect(manager.getByRole('button', { name: 'Reset', exact: true })).toBeVisible();
 });
 
+test('selected service project customer retrieval succeeds without API 412', async ({ page }) => {
+  const manager = await openManager(page);
+  const body = manager.locator('body');
+
+  // Customer retrieval is asynchronous after the service desk is selected. Allow
+  // enough time for the real Forge resolver/JSM call to finish before asserting.
+  await page.waitForTimeout(4000);
+  await expect(body).not.toContainText(/Atlassian API error 412|There was an error invoking the function/i);
+  await expect(manager.getByPlaceholder('Search customers by name or email')).toBeVisible();
+
+  // Trigger the resolver once more through the user-facing search path so this
+  // test fails if the experimental customer API opt-in header regresses.
+  await manager.getByPlaceholder('Search customers by name or email').fill('qa-no-412-probe');
+  await manager.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.waitForTimeout(2000);
+  await expect(body).not.toContainText(/Atlassian API error 412|There was an error invoking the function/i);
+});
+
 test('organisation administration exposes search', async ({ page }) => {
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Organisations', exact: true }).click();
