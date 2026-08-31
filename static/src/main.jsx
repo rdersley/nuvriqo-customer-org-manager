@@ -62,6 +62,16 @@ function validateRowsLocally(rows) {
   return { total: rows.length, valid: Math.max(0, rows.length - invalidRowCount), errors };
 }
 
+function invalidRowMap(validationResult) {
+  const invalidRows = new Map();
+  (validationResult?.errors || []).forEach((e) => {
+    const idx = e.row - 2;
+    if (!invalidRows.has(idx)) invalidRows.set(idx, []);
+    invalidRows.get(idx).push(e.message);
+  });
+  return invalidRows;
+}
+
 function App() {
   const [tab, setTab] = useState('Customers');
   const [serviceDesks, setServiceDesks] = useState([]);
@@ -76,6 +86,7 @@ function App() {
   const [validation, setValidation] = useState(null);
   const [preview, setPreview] = useState([]);
   const [previewing, setPreviewing] = useState(false);
+  const [comparisonProgress, setComparisonProgress] = useState(null);
   const [importStatus, setImportStatus] = useState(null);
   const [history, setHistory] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
@@ -134,13 +145,7 @@ function App() {
         setOrgs(currentOrgs);
       }
       const orgNames = new Set(currentOrgs.map((o) => String(o.name || '').toLowerCase()));
-      const invalidRows = new Map();
-      (validationResult?.errors || []).forEach((e) => {
-        const idx = e.row - 2;
-        if (!invalidRows.has(idx)) invalidRows.set(idx, []);
-        invalidRows.get(idx).push(e.message);
-      });
-
+      const invalidRows = invalidRowMap(validationResult);
       const results = parsed.map((row, i) => invalidRows.has(i)
         ? { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') }
         : null);
@@ -171,10 +176,69 @@ function App() {
     } finally { setPreviewing(false); }
   }
 
+  async function buildLargePreview(parsed, validationResult) {
+    const invalidRows = invalidRowMap(validationResult);
+    const pendingPreview = parsed.map((row, i) => invalidRows.has(i)
+      ? { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') }
+      : { ...row, rowNumber: i + 2, action: 'PENDING', reason: 'Waiting for batched Jira comparison.' });
+    setPreview(pendingPreview);
+
+    if (!desk) {
+      setError('A Jira service project must be selected before the large-file comparison can run.');
+      return;
+    }
+
+    setPreviewing(true);
+    setComparisonProgress({ complete: false, customersScanned: 0, batches: 0 });
+    setError('');
+    try {
+      const byEmail = new Map();
+      let start = 0;
+      let complete = false;
+      let batches = 0;
+
+      while (!complete) {
+        if (batches >= 200) throw new Error('Customer index safety limit reached before Jira reported the final page.');
+        const batch = await invoke('getCustomerIndexBatch', { serviceDeskId: desk, start, pages: 10 });
+        (batch.customers || []).forEach((customer) => {
+          const email = String(customer.emailAddress || '').trim().toLowerCase();
+          if (email) byEmail.set(email, customer);
+        });
+        batches += 1;
+        complete = Boolean(batch.complete);
+        const nextStart = Number(batch.nextStart || 0);
+        if (!complete && (!Number.isFinite(nextStart) || nextStart <= start)) {
+          throw new Error('Jira customer pagination stopped before the comparison was complete.');
+        }
+        start = nextStart;
+        setComparisonProgress({ complete: false, customersScanned: byEmail.size, batches });
+      }
+
+      const results = parsed.map((row, i) => {
+        if (invalidRows.has(i)) return { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') };
+        const email = String(row.email || '').trim().toLowerCase();
+        const exact = byEmail.get(email);
+        if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: 'New customer.' };
+        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) {
+          return { ...row, rowNumber: i + 2, action: 'SKIP', reason: 'Customer already matches Jira.' };
+        }
+        return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}.` };
+      });
+      setPreview(results);
+      setComparisonProgress({ complete: true, customersScanned: byEmail.size, batches });
+    } catch (e) {
+      setError(`Large import comparison failed: ${e.message}`);
+      setComparisonProgress((current) => ({ ...(current || {}), failed: true }));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
   async function onFile(e) {
     const f = e.target.files?.[0];
     if (!f) return;
     setError('');
+    setComparisonProgress(null);
     const parsed = parseCsv(await f.text());
     setCsvInfo({ fileName: f.name, headers: parsed.headers, missingHeaders: parsed.missingHeaders });
     setRows(parsed.rows);
@@ -191,15 +255,7 @@ function App() {
       if (parsed.rows.length > 500) {
         const result = validateRowsLocally(parsed.rows);
         setValidation(result);
-        const invalidRows = new Map();
-        (result.errors || []).forEach((err) => {
-          const idx = err.row - 2;
-          if (!invalidRows.has(idx)) invalidRows.set(idx, []);
-          invalidRows.get(idx).push(err.message);
-        });
-        setPreview(parsed.rows.map((row, i) => invalidRows.has(i)
-          ? { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') }
-          : { ...row, rowNumber: i + 2, action: 'PENDING', reason: 'Large import detected. Jira comparison is deferred to the server-side batch preview workflow.' }));
+        await buildLargePreview(parsed.rows, result);
         return;
       }
       const result = await invoke('validateImport', { rows: parsed.rows });
@@ -267,7 +323,7 @@ function App() {
     <main>
       <header>
         <div><h1>{tab}</h1><p>Bulk customer and organisation administration for Jira Service Management.</p></div>
-        {tab === 'Customers' && <select value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}
+        {(tab === 'Customers' || tab === 'Import') && <select value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}
       </header>
       {error && <div className="error">{error}</div>}
 
@@ -293,10 +349,17 @@ function App() {
           {errorReasons.slice(0, 5).map(([reason, count]) => <div key={reason}><strong>{count.toLocaleString()} row{count === 1 ? '' : 's'}:</strong> {reason}</div>)}
         </section>}
 
-        {previewSummary.PENDING > 0 && <section className="card">
+        {comparisonProgress && <section className="card">
+          <h3>{comparisonProgress.complete ? 'Jira comparison complete' : 'Large import Jira comparison'}</h3>
+          {comparisonProgress.complete
+            ? <p><strong>All valid CSV rows have now been checked against Jira.</strong> Scanned {comparisonProgress.customersScanned.toLocaleString()} existing customer email{comparisonProgress.customersScanned === 1 ? '' : 's'} in {comparisonProgress.batches} controlled batch{comparisonProgress.batches === 1 ? '' : 'es'}.</p>
+            : <p>Building a safe customer index from Jira in controlled batches… {comparisonProgress.customersScanned.toLocaleString()} existing customer email{comparisonProgress.customersScanned === 1 ? '' : 's'} scanned so far.</p>}
+        </section>}
+
+        {previewSummary.PENDING > 0 && !comparisonProgress?.complete && <section className="card">
           <h3>Large import safety check</h3>
-          <p><strong>{previewSummary.PENDING.toLocaleString()} valid rows will continue.</strong>{previewSummary.ERROR > 0 ? ` ${previewSummary.ERROR.toLocaleString()} error row${previewSummary.ERROR === 1 ? '' : 's'} will be excluded automatically.` : ''}</p>
-          <p>No per-row Jira lookups were started because this file is too large for the interactive preview path. Import remains disabled only until the valid rows complete the server-side Jira comparison.</p>
+          <p><strong>{previewSummary.PENDING.toLocaleString()} valid rows are being checked.</strong>{previewSummary.ERROR > 0 ? ` ${previewSummary.ERROR.toLocaleString()} error row${previewSummary.ERROR === 1 ? '' : 's'} will be excluded automatically.` : ''}</p>
+          <p>Import stays disabled until the batched Jira comparison is complete, so no unchecked rows can be submitted.</p>
         </section>}
 
         {rows.length > 0 && <section className="stats"><div><b>{summary.total}</b><span>Rows</span></div><div><b>{previewSummary.CREATE}</b><span>Create</span></div><div><b>{previewSummary.UPDATE}</b><span>Update</span></div><div><b>{previewSummary.SKIP}</b><span>Skip</span></div><div><b>{previewSummary.ERROR}</b><span>Excluded</span></div></section>}
