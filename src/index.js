@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.3' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.4' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -46,8 +46,17 @@ secureDefine('getCustomers', async ({ payload }) => {
   const query = String(payload?.query || '');
   const start = Number(payload?.start || 0);
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
+
+  // Atlassian currently marks GET service-desk customers as Experimental.
+  // JSM returns HTTP 412 when the opt-in header is omitted.
   const res = await api.asUser().requestJira(
-    route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`
+    route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`,
+    {
+      headers: {
+        Accept: 'application/json',
+        'X-ExperimentalApi': 'opt-in'
+      }
+    }
   );
   return jsonResponse(res);
 });
