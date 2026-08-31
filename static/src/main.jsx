@@ -96,7 +96,7 @@ function App() {
       try {
         const r = await invoke('getServiceDesks');
         setServiceDesks(r.values || []);
-        if (r.values?.[0]) setDesk(r.values[0].id);
+        if (r.values?.[0]) setDesk(String(r.values[0].id));
       } catch (e) { setError(e.message); }
     })();
   }, []);
@@ -105,10 +105,28 @@ function App() {
   useEffect(() => { if (tab === 'Customers' && desk) loadCustomers(); }, [tab, desk]);
   useEffect(() => { if (tab === 'Import History') loadHistory(); }, [tab]);
 
+  async function ensureDeskId() {
+    if (desk) return String(desk);
+    const existing = serviceDesks?.[0]?.id;
+    if (existing !== undefined && existing !== null && String(existing)) {
+      const id = String(existing);
+      setDesk(id);
+      return id;
+    }
+    const r = await invoke('getServiceDesks');
+    const desks = r.values || [];
+    setServiceDesks(desks);
+    const id = String(desks?.[0]?.id || '');
+    if (!id) throw new Error('No Jira service projects are available.');
+    setDesk(id);
+    return id;
+  }
+
   async function loadCustomers(query = customerQuery) {
     setLoading(true); setError('');
     try {
-      const r = await invoke('getCustomers', { serviceDeskId: desk, query });
+      const serviceDeskId = await ensureDeskId();
+      const r = await invoke('getCustomers', { serviceDeskId, query });
       setCustomers(r.values || []);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -135,9 +153,10 @@ function App() {
   }
 
   async function buildPreview(parsed, validationResult) {
-    if (!desk || !parsed.length) { setPreview([]); return; }
+    if (!parsed.length) { setPreview([]); return; }
     setPreviewing(true); setError('');
     try {
+      const serviceDeskId = await ensureDeskId();
       let currentOrgs = orgs;
       if (!currentOrgs.length) {
         const r = await invoke('getOrganizations');
@@ -156,7 +175,7 @@ function App() {
       for (const i of validIndexes) {
         const row = parsed[i];
         try {
-          const found = await invoke('getCustomers', { serviceDeskId: desk, query: String(row.email || '').trim() });
+          const found = await invoke('getCustomers', { serviceDeskId, query: String(row.email || '').trim() });
           const exact = (found.values || []).find((c) => String(c.emailAddress || '').toLowerCase() === String(row.email || '').trim().toLowerCase());
           const orgNote = row.organisation && !orgNames.has(String(row.organisation).toLowerCase())
             ? `Organisation “${row.organisation}” will be created.` : '';
@@ -183,15 +202,11 @@ function App() {
       : { ...row, rowNumber: i + 2, action: 'PENDING', reason: 'Waiting for batched Jira comparison.' });
     setPreview(pendingPreview);
 
-    if (!desk) {
-      setError('A Jira service project must be selected before the large-file comparison can run.');
-      return;
-    }
-
     setPreviewing(true);
     setComparisonProgress({ complete: false, customersScanned: 0, batches: 0 });
     setError('');
     try {
+      const serviceDeskId = await ensureDeskId();
       const byEmail = new Map();
       let start = 0;
       let complete = false;
@@ -199,7 +214,7 @@ function App() {
 
       while (!complete) {
         if (batches >= 200) throw new Error('Customer index safety limit reached before Jira reported the final page.');
-        const batch = await invoke('getCustomerIndexBatch', { serviceDeskId: desk, start, pages: 10 });
+        const batch = await invoke('getCustomerIndexBatch', { serviceDeskId, start, pages: 10 });
         (batch.customers || []).forEach((customer) => {
           const email = String(customer.emailAddress || '').trim().toLowerCase();
           if (email) byEmail.set(email, customer);
