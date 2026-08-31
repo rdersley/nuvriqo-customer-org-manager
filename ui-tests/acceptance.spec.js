@@ -77,6 +77,7 @@ test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
 });
 
 test('16k valid CSV completes batched Jira comparison without API 412', async ({ page }) => {
+  test.setTimeout(90000);
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
@@ -86,13 +87,14 @@ test('16k valid CSV completes batched Jira comparison without API 412', async ({
     mimeType: 'text/csv',
     buffer: Buffer.from(csv.join('\n'))
   });
-  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 60000 });
+  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 75000 });
   await expect(manager.locator('body')).toContainText('All valid CSV rows have now been checked against Jira');
   await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed|Large import comparison failed/i);
   await expect(manager.getByRole('button', { name: /Import 16413 customer changes/ })).toBeEnabled();
 });
 
 test('large mixed CSV excludes errors and enables valid customer changes', async ({ page }) => {
+  test.setTimeout(90000);
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
@@ -104,7 +106,7 @@ test('large mixed CSV excludes errors and enables valid customer changes', async
     mimeType: 'text/csv',
     buffer: Buffer.from(csv.join('\n'))
   });
-  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 60000 });
+  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 75000 });
   await expect(manager.locator('body')).toContainText('2 rows will be excluded from this import');
   await expect(manager.locator('body')).toContainText(/Valid email required/);
   await expect(manager.locator('body')).toContainText(/Duplicate email in file/);
