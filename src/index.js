@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.8' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.9' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -164,6 +164,27 @@ secureDefine('getImportSessions', async () => {
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 });
 
+secureDefine('getImportSessionSummaries', async () => {
+  const result = await kvs.query().where('key', WhereConditions.beginsWith('import-session:')).limit(50).getMany();
+  return (result.results || []).map((r) => {
+    const { actionableRowNumbers, batches, fingerprint, ...summary } = r.value || {};
+    return summary;
+  }).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+});
+
+secureDefine('findRecoverableImportSession', async ({ payload }) => {
+  const fingerprint = String(payload?.fingerprint || '').trim().toLowerCase();
+  const serviceDeskId = String(payload?.serviceDeskId || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('A SHA-256 import fingerprint is required');
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+
+  const pointer = await kvs.get(`import-recovery:${serviceDeskId}:${fingerprint}`);
+  if (!pointer?.sessionId) return null;
+  const session = await kvs.get(`import-session:${pointer.sessionId}`);
+  if (!session || session.status === 'SUBMITTED' || session.fingerprint !== fingerprint || String(session.serviceDeskId) !== serviceDeskId) return null;
+  return session;
+});
+
 secureDefine('startImportSession', async ({ payload }) => {
   const id = String(payload?.id || '').trim();
   const fingerprint = String(payload?.fingerprint || '').trim().toLowerCase();
@@ -214,6 +235,7 @@ secureDefine('startImportSession', async ({ payload }) => {
     batches: []
   };
   await kvs.set(key, session);
+  await kvs.set(`import-recovery:${serviceDeskId}:${fingerprint}`, { sessionId: id, updatedAt: createdAt });
   return session;
 });
 
@@ -308,16 +330,20 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     }].sort((a, b) => Number(a.batchNumber) - Number(b.batchNumber));
     const submittedRows = batches.reduce((sum, b) => sum + Number(b.count || 0), 0);
     const completedBatches = batches.length;
+    const nextStatus = completedBatches >= totalBatches ? 'SUBMITTED' : 'IN_PROGRESS';
     await kvs.set(sessionKey, {
       ...previous,
       id: importSessionId,
       totalBatches,
       completedBatches,
       submittedRows,
-      status: completedBatches >= totalBatches ? 'SUBMITTED' : 'IN_PROGRESS',
+      status: nextStatus,
       updatedAt: createdAt,
       batches
     });
+    if (nextStatus === 'SUBMITTED' && previous?.fingerprint && previous?.serviceDeskId) {
+      await kvs.delete(`import-recovery:${previous.serviceDeskId}:${previous.fingerprint}`);
+    }
   }
 
   return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
