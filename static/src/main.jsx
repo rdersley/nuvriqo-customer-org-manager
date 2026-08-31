@@ -72,6 +72,10 @@ function invalidRowMap(validationResult) {
   return invalidRows;
 }
 
+function makeSessionId() {
+  return globalThis.crypto?.randomUUID?.() || `import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function App() {
   const [tab, setTab] = useState('Customers');
   const [serviceDesks, setServiceDesks] = useState([]);
@@ -88,6 +92,8 @@ function App() {
   const [previewing, setPreviewing] = useState(false);
   const [comparisonProgress, setComparisonProgress] = useState(null);
   const [importStatus, setImportStatus] = useState(null);
+  const [importProgress, setImportProgress] = useState(null);
+  const [resumePlan, setResumePlan] = useState(null);
   const [history, setHistory] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
 
@@ -254,6 +260,8 @@ function App() {
     if (!f) return;
     setError('');
     setComparisonProgress(null);
+    setImportProgress(null);
+    setResumePlan(null);
     const parsed = parseCsv(await f.text());
     setCsvInfo({ fileName: f.name, headers: parsed.headers, missingHeaders: parsed.missingHeaders });
     setRows(parsed.rows);
@@ -282,8 +290,77 @@ function App() {
     }
   }
 
+  async function submitBatchWithRetry(plan, batchIndex, existingTasks) {
+    const chunk = plan.chunks[batchIndex];
+    const batchNumber = batchIndex + 1;
+    const idempotencyKey = `${plan.sessionId}-batch-${batchNumber}`;
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      setImportProgress({
+        state: 'running',
+        sessionId: plan.sessionId,
+        totalRows: plan.totalRows,
+        totalBatches: plan.chunks.length,
+        completedBatches: batchIndex,
+        completedRows: Math.min(batchIndex * 100, plan.totalRows),
+        currentBatch: batchNumber,
+        attempt
+      });
+      try {
+        return await invoke('bulkUpsertCustomers', {
+          rows: chunk,
+          importSessionId: plan.sessionId,
+          batchNumber,
+          totalBatches: plan.chunks.length,
+          idempotencyKey,
+          rowStart: chunk[0]?.rowNumber || null,
+          rowEnd: chunk[chunk.length - 1]?.rowNumber || null
+        });
+      } catch (e) {
+        lastError = e;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+      }
+    }
+    const completedRows = existingTasks.reduce((sum, task) => sum + Number(task.submittedRows || 0), 0);
+    const failedPlan = { ...plan, nextBatchIndex: batchIndex, tasks: existingTasks };
+    setResumePlan(failedPlan);
+    setImportProgress({
+      state: 'failed',
+      sessionId: plan.sessionId,
+      totalRows: plan.totalRows,
+      totalBatches: plan.chunks.length,
+      completedBatches: existingTasks.length,
+      completedRows,
+      currentBatch: batchNumber,
+      attempt: 3,
+      error: lastError?.message || 'Batch submission failed'
+    });
+    throw new Error(`Batch ${batchNumber} of ${plan.chunks.length} failed after 3 attempts. ${lastError?.message || ''}`.trim());
+  }
+
+  async function submitPlan(plan, startBatchIndex = 0, initialTasks = []) {
+    const tasks = [...initialTasks];
+    for (let i = startBatchIndex; i < plan.chunks.length; i += 1) {
+      const task = await submitBatchWithRetry(plan, i, tasks);
+      tasks.push({ ...task, submittedRows: plan.chunks[i].length });
+      const completedRows = tasks.reduce((sum, item) => sum + Number(item.submittedRows || 0), 0);
+      setImportProgress({
+        state: i === plan.chunks.length - 1 ? 'complete' : 'running',
+        sessionId: plan.sessionId,
+        totalRows: plan.totalRows,
+        totalBatches: plan.chunks.length,
+        completedBatches: i + 1,
+        completedRows,
+        currentBatch: i + 1,
+        attempt: 1
+      });
+    }
+    setResumePlan(null);
+    return tasks;
+  }
+
   async function runImport() {
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setImportStatus(null); setResumePlan(null);
     try {
       if (preview.some((r) => r.action === 'PENDING')) {
         throw new Error('Valid rows are still waiting for Jira comparison. Error rows will be excluded automatically, but unchecked rows cannot be submitted yet.');
@@ -291,6 +368,7 @@ function App() {
       const actionable = preview.filter((r) => r.action === 'CREATE' || r.action === 'UPDATE');
       if (!actionable.length) throw new Error('There are no Create or Update rows to import.');
 
+      setImportProgress({ state: 'preparing', totalRows: actionable.length, totalBatches: Math.ceil(actionable.length / 100), completedBatches: 0, completedRows: 0 });
       const names = [...new Set(actionable.map((r) => r.organisation).filter(Boolean))];
       const prepared = await invoke('prepareImportOrganizations', { names });
       const allOrgs = [...orgs, ...(prepared.organizations || [])];
@@ -301,14 +379,33 @@ function App() {
       }));
       const chunks = [];
       for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
-      const tasks = [];
-      for (const chunk of chunks) tasks.push(await invoke('bulkUpsertCustomers', { rows: chunk }));
+      const plan = { sessionId: makeSessionId(), totalRows: mapped.length, chunks };
+      const tasks = await submitPlan(plan);
       setImportStatus({
         submitted: mapped.length,
         tasks,
         createdOrganizations: (prepared.created || []).length,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
-        excludedErrors: preview.filter((r) => r.action === 'ERROR').length
+        excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
+        sessionId: plan.sessionId
+      });
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  async function resumeImport() {
+    if (!resumePlan) return;
+    setLoading(true); setError('');
+    try {
+      const tasks = await submitPlan(resumePlan, resumePlan.nextBatchIndex, resumePlan.tasks || []);
+      setImportStatus({
+        submitted: resumePlan.totalRows,
+        tasks,
+        createdOrganizations: 0,
+        skipped: preview.filter((r) => r.action === 'SKIP').length,
+        excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
+        sessionId: resumePlan.sessionId,
+        resumed: true
       });
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -383,12 +480,21 @@ function App() {
 
         {preview.length > 0 && <section className="card"><h3>Import preview</h3><table><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><strong>{r.action}</strong></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table>{preview.length > 500 && <div className="empty">Showing the first 500 of {preview.length.toLocaleString()} preview rows.</div>}</section>}
 
-        {rows.length > 0 && <button className="primary" disabled={loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : `Import ${previewSummary.CREATE + previewSummary.UPDATE} customer changes${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} errors)` : ''}`}</button>}
+        {importProgress && <section className={`card ${importProgress.state === 'failed' ? 'error' : ''}`}>
+          <h3>{importProgress.state === 'complete' ? 'Import batches submitted' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}</h3>
+          {importProgress.state === 'preparing' && <p>Preparing organisations and {importProgress.totalRows.toLocaleString()} customer changes for controlled submission.</p>}
+          {importProgress.state !== 'preparing' && <p><strong>{importProgress.completedRows.toLocaleString()} of {importProgress.totalRows.toLocaleString()} rows submitted</strong> across {importProgress.completedBatches} of {importProgress.totalBatches} batch{importProgress.totalBatches === 1 ? '' : 'es'}.</p>}
+          {importProgress.state === 'running' && <p>Currently processing batch {importProgress.currentBatch} of {importProgress.totalBatches}{importProgress.attempt > 1 ? ` — retry ${importProgress.attempt} of 3` : ''}.</p>}
+          {importProgress.state === 'failed' && <p>Batch {importProgress.currentBatch} failed after three attempts. Earlier batches remain recorded and the failed batch can be retried with the same idempotency key, so already accepted batches are not intentionally resubmitted.</p>}
+        </section>}
 
-        {importStatus && <div className="success">Submitted {importStatus.submitted} customer changes in {importStatus.tasks.length} bulk task(s). Skipped {importStatus.skipped} unchanged row(s). Excluded {importStatus.excludedErrors} error row(s). Created {importStatus.createdOrganizations} missing organisation(s).</div>}
+        {rows.length > 0 && !resumePlan && <button className="primary" disabled={loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : `Import ${previewSummary.CREATE + previewSummary.UPDATE} customer changes${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} errors)` : ''}`}</button>}
+        {resumePlan && <button className="primary" disabled={loading} onClick={resumeImport}>{loading ? 'Retrying…' : `Retry from batch ${resumePlan.nextBatchIndex + 1}`}</button>}
+
+        {importStatus && <div className="success">Submitted {importStatus.submitted} customer changes in {importStatus.tasks.length} bulk task(s). Skipped {importStatus.skipped} unchanged row(s). Excluded {importStatus.excludedErrors} error row(s). Created {importStatus.createdOrganizations} missing organisation(s). Import session: {importStatus.sessionId}.</div>}
       </>}
 
-      {tab === 'Import History' && <section className="card"><div className="toolbar"><button onClick={loadHistory}>Refresh status</button></div><table><thead><tr><th>Submitted</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.count}</td><td>{h.task?.status || 'Unknown'}</td><td>{h.task?.failures?.length || 0}</td><td className="muted">{h.taskId}</td></tr>)}</tbody></table>{!history.length && <div className="empty">No imports recorded yet.</div>}</section>}
+      {tab === 'Import History' && <section className="card"><div className="toolbar"><button onClick={loadHistory}>Refresh status</button></div><table><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td>{h.task?.status || 'Unknown'}</td><td>{h.task?.failures?.length || 0}</td><td className="muted">{h.taskId}</td></tr>)}</tbody></table>{!history.length && <div className="empty">No imports recorded yet.</div>}</section>}
     </main>
   </div>;
 }
