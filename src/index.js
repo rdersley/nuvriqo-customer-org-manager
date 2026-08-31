@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.7' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.8' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -164,6 +164,59 @@ secureDefine('getImportSessions', async () => {
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 });
 
+secureDefine('startImportSession', async ({ payload }) => {
+  const id = String(payload?.id || '').trim();
+  const fingerprint = String(payload?.fingerprint || '').trim().toLowerCase();
+  const serviceDeskId = String(payload?.serviceDeskId || '').trim();
+  const fileName = String(payload?.fileName || '').trim().slice(0, 255);
+  const actionableRowNumbers = Array.isArray(payload?.actionableRowNumbers)
+    ? payload.actionableRowNumbers.map(Number).filter((n) => Number.isInteger(n) && n >= 2)
+    : [];
+  const totalRows = Math.max(0, Number(payload?.totalRows || actionableRowNumbers.length));
+  const totalBatches = Math.max(1, Number(payload?.totalBatches || Math.ceil(actionableRowNumbers.length / 100) || 1));
+  const skipped = Math.max(0, Number(payload?.skipped || 0));
+  const excludedErrors = Math.max(0, Number(payload?.excludedErrors || 0));
+
+  if (!id) throw new Error('Import session id is required');
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('A SHA-256 import fingerprint is required');
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+  if (!actionableRowNumbers.length) throw new Error('No actionable row numbers supplied');
+  if (actionableRowNumbers.length > 50000) throw new Error('Recovery metadata supports at most 50,000 actionable rows');
+  if (new Set(actionableRowNumbers).size !== actionableRowNumbers.length) throw new Error('Actionable row numbers must be unique');
+  if (totalRows !== actionableRowNumbers.length) throw new Error('Recovery row count does not match the actionable plan');
+  if (totalBatches !== Math.ceil(totalRows / 100)) throw new Error('Recovery batch count does not match the actionable plan');
+
+  const key = `import-session:${id}`;
+  const existing = await kvs.get(key);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint || String(existing.serviceDeskId) !== serviceDeskId) {
+      throw new Error('Import session identity does not match the saved recovery checkpoint');
+    }
+    return existing;
+  }
+
+  const createdAt = new Date().toISOString();
+  const session = {
+    id,
+    fingerprint,
+    serviceDeskId,
+    fileName,
+    actionableRowNumbers,
+    totalRows,
+    totalBatches,
+    skipped,
+    excludedErrors,
+    completedBatches: 0,
+    submittedRows: 0,
+    status: 'READY',
+    createdAt,
+    updatedAt: createdAt,
+    batches: []
+  };
+  await kvs.set(key, session);
+  return session;
+});
+
 secureDefine('validateImport', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const seen = new Set();
@@ -206,6 +259,12 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   const rowStart = Number(payload?.rowStart || 0) || null;
   const rowEnd = Number(payload?.rowEnd || 0) || null;
 
+  if (importSessionId) {
+    const saved = await kvs.get(`import-session:${importSessionId}`);
+    if (!saved) throw new Error('Import recovery session was not initialised before batch submission');
+    if (Number(saved.totalBatches) !== totalBatches) throw new Error('Batch count does not match the saved import recovery plan');
+  }
+
   const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, {
     method: 'POST',
     headers: {
@@ -231,21 +290,12 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     type: 'CUSTOMER_PROFILE_UPSERT'
   };
 
-  // Deterministic history key means a retry of the same idempotent batch updates
-  // the existing history entry rather than manufacturing a duplicate row.
   await kvs.set(`import:${history.id}`, history);
 
   if (importSessionId) {
     const sessionKey = `import-session:${importSessionId}`;
-    const previous = await kvs.get(sessionKey) || {
-      id: importSessionId,
-      createdAt,
-      totalBatches,
-      completedBatches: 0,
-      submittedRows: 0,
-      batches: []
-    };
-    const priorBatches = Array.isArray(previous.batches) ? previous.batches : [];
+    const previous = await kvs.get(sessionKey);
+    const priorBatches = Array.isArray(previous?.batches) ? previous.batches : [];
     const withoutCurrent = priorBatches.filter((b) => Number(b.batchNumber) !== batchNumber);
     const batches = [...withoutCurrent, {
       batchNumber,
