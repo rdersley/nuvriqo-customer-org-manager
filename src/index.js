@@ -34,12 +34,17 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.4' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.5' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
   return jsonResponse(res);
 });
+
+const customerHeaders = {
+  Accept: 'application/json',
+  'X-ExperimentalApi': 'opt-in'
+};
 
 secureDefine('getCustomers', async ({ payload }) => {
   const serviceDeskId = String(payload?.serviceDeskId || '');
@@ -47,18 +52,52 @@ secureDefine('getCustomers', async ({ payload }) => {
   const start = Number(payload?.start || 0);
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
 
-  // Atlassian currently marks GET service-desk customers as Experimental.
-  // JSM returns HTTP 412 when the opt-in header is omitted.
   const res = await api.asUser().requestJira(
     route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`,
-    {
-      headers: {
-        Accept: 'application/json',
-        'X-ExperimentalApi': 'opt-in'
-      }
-    }
+    { headers: customerHeaders }
   );
   return jsonResponse(res);
+});
+
+secureDefine('getCustomerIndexBatch', async ({ payload }) => {
+  const serviceDeskId = String(payload?.serviceDeskId || '');
+  let start = Math.max(0, Number(payload?.start || 0));
+  const pages = Math.min(10, Math.max(1, Number(payload?.pages || 10)));
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+
+  const customers = [];
+  let complete = false;
+  let pagesFetched = 0;
+
+  for (let page = 0; page < pages; page += 1) {
+    const res = await api.asUser().requestJira(
+      route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`,
+      { headers: customerHeaders }
+    );
+    const body = await jsonResponse(res);
+    const values = body?.values || [];
+    customers.push(...values.map((customer) => ({
+      accountId: customer.accountId || customer.key || '',
+      displayName: customer.displayName || '',
+      emailAddress: customer.emailAddress || ''
+    })));
+    pagesFetched += 1;
+
+    if (body?.isLastPage || values.length === 0) {
+      complete = true;
+      break;
+    }
+
+    const limit = Number(body?.limit || 50);
+    const returnedStart = Number(body?.start ?? start);
+    const nextStart = returnedStart + limit;
+    if (!Number.isFinite(nextStart) || nextStart <= start) {
+      throw new Error('Jira customer pagination did not advance safely.');
+    }
+    start = nextStart;
+  }
+
+  return { customers, nextStart: start, complete, pagesFetched };
 });
 
 secureDefine('getOrganizations', async ({ payload }) => {
