@@ -114,6 +114,15 @@ test('large mixed CSV excludes errors and enables valid customer changes', async
   await expect(manager.getByRole('button', { name: /Import 501 customer changes \(exclude 2 errors\)/ })).toBeEnabled();
 });
 
+test('import history exposes aggregate recovery sessions separately from bulk tasks', async ({ page }) => {
+  const manager = await openManager(page);
+  await manager.getByRole('button', { name: 'Import History', exact: true }).click();
+  await expect(manager.getByRole('heading', { name: 'Import History', exact: true })).toBeVisible();
+  await expect(manager.getByRole('heading', { name: 'Import sessions', exact: true })).toBeVisible();
+  await expect(manager.getByRole('heading', { name: 'Bulk task history', exact: true })).toBeVisible();
+  await expect(manager.locator('body')).not.toContainText(/There was an error invoking the function|Atlassian API error 412/i);
+});
+
 test('manager remains healthy at compact desktop width', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   const manager = await openManager(page);
