@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.6' }));
+resolver.define('health', async () => ({ ok: true, version: '0.1.7' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -159,6 +159,11 @@ secureDefine('getImportHistory', async () => {
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 
+secureDefine('getImportSessions', async () => {
+  const result = await kvs.query().where('key', WhereConditions.beginsWith('import-session:')).limit(50).getMany();
+  return (result.results || []).map(r => r.value).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+});
+
 secureDefine('validateImport', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const seen = new Set();
@@ -211,6 +216,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     body: JSON.stringify({ customerProfiles })
   });
   const task = await jsonResponse(res);
+  const createdAt = new Date().toISOString();
   const history = {
     id: idempotencyKey,
     importSessionId,
@@ -221,10 +227,49 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     count: rows.length,
     rowStart,
     rowEnd,
-    createdAt: new Date().toISOString(),
+    createdAt,
     type: 'CUSTOMER_PROFILE_UPSERT'
   };
-  await kvs.set(`import:${history.createdAt}:${history.id}`, history);
+
+  // Deterministic history key means a retry of the same idempotent batch updates
+  // the existing history entry rather than manufacturing a duplicate row.
+  await kvs.set(`import:${history.id}`, history);
+
+  if (importSessionId) {
+    const sessionKey = `import-session:${importSessionId}`;
+    const previous = await kvs.get(sessionKey) || {
+      id: importSessionId,
+      createdAt,
+      totalBatches,
+      completedBatches: 0,
+      submittedRows: 0,
+      batches: []
+    };
+    const priorBatches = Array.isArray(previous.batches) ? previous.batches : [];
+    const withoutCurrent = priorBatches.filter((b) => Number(b.batchNumber) !== batchNumber);
+    const batches = [...withoutCurrent, {
+      batchNumber,
+      count: rows.length,
+      taskId: task.id,
+      idempotencyKey,
+      rowStart,
+      rowEnd,
+      submittedAt: createdAt
+    }].sort((a, b) => Number(a.batchNumber) - Number(b.batchNumber));
+    const submittedRows = batches.reduce((sum, b) => sum + Number(b.count || 0), 0);
+    const completedBatches = batches.length;
+    await kvs.set(sessionKey, {
+      ...previous,
+      id: importSessionId,
+      totalBatches,
+      completedBatches,
+      submittedRows,
+      status: completedBatches >= totalBatches ? 'SUBMITTED' : 'IN_PROGRESS',
+      updatedAt: createdAt,
+      batches
+    });
+  }
+
   return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
 });
 
