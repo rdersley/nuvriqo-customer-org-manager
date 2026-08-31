@@ -52,15 +52,9 @@ test('customer administration exposes working search controls', async ({ page })
 test('selected service project customer retrieval succeeds without API 412', async ({ page }) => {
   const manager = await openManager(page);
   const body = manager.locator('body');
-
-  // Customer retrieval is asynchronous after the service desk is selected. Allow
-  // enough time for the real Forge resolver/JSM call to finish before asserting.
   await page.waitForTimeout(4000);
   await expect(body).not.toContainText(/Atlassian API error 412|There was an error invoking the function/i);
   await expect(manager.getByPlaceholder('Search customers by name or email')).toBeVisible();
-
-  // Trigger the resolver once more through the user-facing search path so this
-  // test fails if the experimental customer API opt-in header regresses.
   await manager.getByPlaceholder('Search customers by name or email').fill('qa-no-412-probe');
   await manager.getByRole('button', { name: 'Search', exact: true }).click();
   await page.waitForTimeout(2000);
@@ -82,23 +76,23 @@ test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
   await expect(manager.locator('input[type="file"]')).toBeVisible();
 });
 
-test('large valid CSV is handled without per-row Jira lookup failure', async ({ page }) => {
+test('16k valid CSV completes batched Jira comparison without API 412', async ({ page }) => {
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
-  for (let i = 1; i <= 501; i += 1) csv.push(`qa-large-${i}@example.invalid,QA Large ${i},QA Organisation`);
+  for (let i = 1; i <= 16413; i += 1) csv.push(`qa-large-${i}@example.invalid,QA Large ${i},QA Organisation`);
   await manager.locator('input[type="file"]').setInputFiles({
-    name: 'large-import-regression.csv',
+    name: 'large-import-16413-regression.csv',
     mimeType: 'text/csv',
     buffer: Buffer.from(csv.join('\n'))
   });
-  await expect(manager.getByRole('heading', { name: 'Large import safety check', exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(manager.locator('body')).toContainText('501 valid rows will continue');
-  await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed/i);
-  await expect(manager.getByRole('button', { name: /Import 0 customer changes/ })).toBeDisabled();
+  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 60000 });
+  await expect(manager.locator('body')).toContainText('All valid CSV rows have now been checked against Jira');
+  await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed|Large import comparison failed/i);
+  await expect(manager.getByRole('button', { name: /Import 16413 customer changes/ })).toBeEnabled();
 });
 
-test('large mixed CSV excludes errors while keeping valid rows eligible', async ({ page }) => {
+test('large mixed CSV excludes errors and enables valid customer changes', async ({ page }) => {
   const manager = await openManager(page);
   await manager.getByRole('button', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
@@ -110,14 +104,12 @@ test('large mixed CSV excludes errors while keeping valid rows eligible', async 
     mimeType: 'text/csv',
     buffer: Buffer.from(csv.join('\n'))
   });
-  await expect(manager.getByRole('heading', { name: 'Large import safety check', exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(manager.locator('body')).toContainText('501 valid rows will continue');
-  await expect(manager.locator('body')).toContainText('2 error rows will be excluded automatically');
+  await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 60000 });
   await expect(manager.locator('body')).toContainText('2 rows will be excluded from this import');
   await expect(manager.locator('body')).toContainText(/Valid email required/);
   await expect(manager.locator('body')).toContainText(/Duplicate email in file/);
-  await expect(manager.locator('body')).not.toContainText(/Import cannot continue|Atlassian API error 412|Preview failed/i);
-  await expect(manager.getByRole('button', { name: /Import 0 customer changes/ })).toBeDisabled();
+  await expect(manager.locator('body')).not.toContainText(/Import cannot continue|Atlassian API error 412|Preview failed|Large import comparison failed/i);
+  await expect(manager.getByRole('button', { name: /Import 501 customer changes \(exclude 2 errors\)/ })).toBeEnabled();
 });
 
 test('manager remains healthy at compact desktop width', async ({ page }) => {
