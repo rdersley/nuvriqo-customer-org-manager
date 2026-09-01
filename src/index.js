@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.1.9' }));
+resolver.define('health', async () => ({ ok: true, version: '0.2.0' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -117,9 +117,9 @@ secureDefine('createOrganization', async ({ payload }) => {
   return jsonResponse(res);
 });
 
-secureDefine('prepareImportOrganizations', async ({ payload }) => {
-  const names = [...new Set((payload?.names || []).map(v => String(v || '').trim()).filter(Boolean))];
-  if (!names.length) return { organizations: [], created: [] };
+async function listOrganizationsForNames(names) {
+  const wanted = [...new Set((names || []).map(v => String(v || '').trim()).filter(Boolean))];
+  if (!wanted.length) return { organizations: [], missing: [] };
 
   const existing = [];
   let start = 0;
@@ -132,9 +132,24 @@ secureDefine('prepareImportOrganizations', async ({ payload }) => {
   }
 
   const byName = new Map(existing.map(o => [String(o.name).toLowerCase(), o]));
+  return {
+    organizations: wanted.map((name) => byName.get(name.toLowerCase())).filter(Boolean),
+    missing: wanted.filter((name) => !byName.has(name.toLowerCase()))
+  };
+}
+
+secureDefine('getImportOrganizations', async ({ payload }) => {
+  return listOrganizationsForNames(payload?.names || []);
+});
+
+secureDefine('prepareImportOrganizations', async ({ payload }) => {
+  const names = [...new Set((payload?.names || []).map(v => String(v || '').trim()).filter(Boolean))];
+  if (!names.length) return { organizations: [], created: [] };
+
+  const found = await listOrganizationsForNames(names);
+  const byName = new Map(found.organizations.map(o => [String(o.name).toLowerCase(), o]));
   const created = [];
-  for (const name of names) {
-    if (byName.has(name.toLowerCase())) continue;
+  for (const name of found.missing) {
     const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -144,7 +159,47 @@ secureDefine('prepareImportOrganizations', async ({ payload }) => {
     byName.set(name.toLowerCase(), org);
     created.push(org);
   }
-  return { organizations: [...byName.values()].filter(o => names.some(n => n.toLowerCase() === String(o.name).toLowerCase())), created };
+  return { organizations: names.map((name) => byName.get(name.toLowerCase())).filter(Boolean), created };
+});
+
+secureDefine('getImportMappings', async () => {
+  const result = await kvs.query().where('key', WhereConditions.beginsWith('import-mapping:')).limit(50).getMany();
+  return (result.results || []).map((r) => r.value).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+});
+
+secureDefine('saveImportMapping', async ({ payload }) => {
+  const id = String(payload?.id || '').trim() || (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+  const name = String(payload?.name || '').trim().slice(0, 100);
+  const serviceDeskId = String(payload?.serviceDeskId || '').trim();
+  const emailHeader = String(payload?.emailHeader || '').trim().slice(0, 255);
+  const displayNameHeader = String(payload?.displayNameHeader || '').trim().slice(0, 255);
+  const organisationHeader = String(payload?.organisationHeader || '').trim().slice(0, 255);
+  if (!name) throw new Error('Mapping name is required');
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+  if (!emailHeader || !displayNameHeader) throw new Error('Email and Display Name mappings are required');
+
+  const key = `import-mapping:${id}`;
+  const existing = await kvs.get(key);
+  const now = new Date().toISOString();
+  const mapping = {
+    id,
+    name,
+    serviceDeskId,
+    emailHeader,
+    displayNameHeader,
+    organisationHeader,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  };
+  await kvs.set(key, mapping);
+  return mapping;
+});
+
+secureDefine('deleteImportMapping', async ({ payload }) => {
+  const id = String(payload?.id || '').trim();
+  if (!id) throw new Error('Mapping id is required');
+  await kvs.delete(`import-mapping:${id}`);
+  return { ok: true, id };
 });
 
 secureDefine('getTaskStatus', async ({ payload }) => {
