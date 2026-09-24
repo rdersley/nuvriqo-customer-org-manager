@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@forge/bridge';
 import './styles.css';
 
-const tabs = ['Customers', 'Organisations', 'Import', 'Import History'];
+const tabs = ['Dashboard', 'Customers', 'Organisations', 'Import', 'Import History'];
 
 function parseCsv(text) {
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
@@ -104,6 +104,7 @@ function App() {
   const [importSessions, setImportSessions] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
   const [fileFingerprint, setFileFingerprint] = useState('');
+  const [managementSummary, setManagementSummary] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -118,6 +119,7 @@ function App() {
   useEffect(() => { if (tab === 'Organisations') loadOrgs(); }, [tab]);
   useEffect(() => { if (tab === 'Customers' && desk) loadCustomers(); }, [tab, desk]);
   useEffect(() => { if (tab === 'Import History') loadHistory(); }, [tab]);
+  useEffect(() => { if (tab === 'Dashboard' && desk) loadManagementSummary(); }, [tab, desk]);
 
   async function ensureDeskId() {
     if (desk) return String(desk);
@@ -151,6 +153,15 @@ function App() {
     try {
       const r = await invoke('getOrganizations');
       setOrgs(r.values || []);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  async function loadManagementSummary() {
+    setLoading(true); setError('');
+    try {
+      const serviceDeskId = await ensureDeskId();
+      setManagementSummary(await invoke('getManagementSummary', { serviceDeskId }));
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }
@@ -509,9 +520,15 @@ function App() {
     <main>
       <header>
         <div><h1>{tab}</h1><p>Bulk customer and organisation administration for Jira Service Management.</p></div>
-        {(tab === 'Customers' || tab === 'Import') && <select value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}
+        {(tab === 'Dashboard' || tab === 'Customers' || tab === 'Import') && <select value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}
       </header>
       {error && <div className="error">{error}</div>}
+
+      {tab === 'Dashboard' && <>
+        <section className="stats"><div><b>{managementSummary?.customerCount ?? '—'}</b><span>Customers</span></div><div><b>{managementSummary?.organizationCount ?? '—'}</b><span>Organisations</span></div><div><b>{managementSummary?.duplicateOrganizationGroups?.length ?? '—'}</b><span>Duplicate org groups</span></div><div><b>{managementSummary?.recoverableImportCount ?? '—'}</b><span>Imports needing attention</span></div></section>
+        <section className="card"><div className="toolbar"><button onClick={loadManagementSummary} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh dashboard'}</button></div><h3>Data-quality checks</h3>{managementSummary?.duplicateOrganizationGroups?.length ? <table><thead><tr><th>Possible duplicate organisation</th><th>Records</th></tr></thead><tbody>{managementSummary.duplicateOrganizationGroups.map((group, i)=><tr key={i}><td>{group.map(x=>x.name).join(' / ')}</td><td>{group.map(x=>x.id).join(', ')}</td></tr>)}</tbody></table> : <div className="empty">No duplicate organisation names detected.</div>}</section>
+        <section className="card"><h3>Administration activity</h3><p>Recorded bulk import tasks: <strong>{managementSummary?.importTaskCount ?? '—'}</strong></p><p className="muted">Dashboard generated {managementSummary?.generatedAt ? new Date(managementSummary.generatedAt).toLocaleString() : '—'}.</p></section>
+      </>}
 
       {tab === 'Customers' && <section className="card">
         <div className="toolbar"><input value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') loadCustomers(e.currentTarget.value); }} placeholder="Search customers by name or email"/><button onClick={() => loadCustomers(customerQuery)}>Search</button><button onClick={() => { setCustomerQuery(''); loadCustomers(''); }}>Reset</button></div>

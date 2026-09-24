@@ -106,6 +106,61 @@ secureDefine('getOrganizations', async ({ payload }) => {
   return jsonResponse(res);
 });
 
+secureDefine('getManagementSummary', async ({ payload }) => {
+  const serviceDeskId = String(payload?.serviceDeskId || '');
+  if (!serviceDeskId) throw new Error('serviceDeskId is required');
+
+  let customerCount = 0;
+  let start = 0;
+  for (let page = 0; page < 200; page += 1) {
+    const res = await api.asUser().requestJira(
+      route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`,
+      { headers: customerHeaders }
+    );
+    const body = await jsonResponse(res);
+    const values = body?.values || [];
+    customerCount += values.length;
+    if (body?.isLastPage || values.length === 0) break;
+    const next = Number(body?.start ?? start) + Number(body?.limit || 50);
+    if (!Number.isFinite(next) || next <= start) break;
+    start = next;
+  }
+
+  const organizations = [];
+  start = 0;
+  for (let page = 0; page < 200; page += 1) {
+    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
+    const body = await jsonResponse(res);
+    organizations.push(...(body?.values || []));
+    if (body?.isLastPage || !(body?.values || []).length) break;
+    const next = Number(body?.start ?? start) + Number(body?.limit || 50);
+    if (!Number.isFinite(next) || next <= start) break;
+    start = next;
+  }
+
+  const byName = new Map();
+  for (const org of organizations) {
+    const key = String(org?.name || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push({ id: org.id, name: org.name });
+  }
+  const duplicateOrganizations = [...byName.values()].filter((rows) => rows.length > 1);
+
+  const imports = await kvs.query().where('key', WhereConditions.beginsWith('import:')).limit(100).getMany();
+  const sessions = await kvs.query().where('key', WhereConditions.beginsWith('import-session:')).limit(50).getMany();
+  const sessionValues = (sessions.results || []).map((r) => r.value || {});
+
+  return {
+    customerCount,
+    organizationCount: organizations.length,
+    duplicateOrganizationGroups: duplicateOrganizations,
+    importTaskCount: (imports.results || []).length,
+    recoverableImportCount: sessionValues.filter((s) => s.status && s.status !== 'SUBMITTED').length,
+    generatedAt: new Date().toISOString()
+  };
+});
+
 secureDefine('createOrganization', async ({ payload }) => {
   const name = String(payload?.name || '').trim();
   if (!name) throw new Error('Organisation name is required');
