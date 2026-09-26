@@ -100,6 +100,19 @@ async function prepareOrganisations(names) {
   return { organizations: [...found.values(), ...created], created };
 }
 
+// Finds or creates every organisation the rows name, then returns the rows with organizationIds attached.
+async function attachOrganisationIds(rows) {
+  const prepared = await prepareOrganisations(rows.map((r) => r.organisation));
+  const idByKey = new Map(prepared.organizations.map((o) => [organisationKey(o.name), o.id]));
+  return {
+    rows: rows.map((r) => {
+      const key = organisationKey(r.organisation);
+      return { ...r, organizationIds: idByKey.has(key) ? [idByKey.get(key)] : [] };
+    }),
+    created: prepared.created
+  };
+}
+
 function invalidRowMap(validationResult) {
   const invalidRows = new Map();
   (validationResult?.errors || []).forEach((e) => {
@@ -314,16 +327,9 @@ function App() {
       if (!row) throw new Error(`Saved recovery row ${rowNumber} is not present in this CSV.`);
       return { ...row, rowNumber };
     });
-    const names = [...new Set(recoveryRows.map((r) => r.organisation).filter(Boolean))];
-    const prepared = await prepareOrganisations(names);
-    const allOrgs = [...orgs, ...(prepared.organizations || [])];
-    const orgMap = new Map(allOrgs.map((o) => [organisationKey(o.name), o.id]));
-    const mapped = recoveryRows.map((r) => ({
-      ...r,
-      organizationIds: r.organisation && orgMap.has(organisationKey(r.organisation)) ? [orgMap.get(organisationKey(r.organisation))] : []
-    }));
+    // Recovery discovery must not change Jira: organisations are resolved (and created) only when Resume is clicked.
     const chunks = [];
-    for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
+    for (let i = 0; i < recoveryRows.length; i += 100) chunks.push(recoveryRows.slice(i, i + 100));
     if (chunks.length !== Number(session.totalBatches)) throw new Error('Saved recovery batch count does not match this CSV. Resume has been blocked.');
 
     const completed = new Set((session.batches || []).map((b) => Number(b.batchNumber)));
@@ -331,12 +337,12 @@ function App() {
     while (nextBatchIndex < chunks.length && completed.has(nextBatchIndex + 1)) nextBatchIndex += 1;
     if (nextBatchIndex >= chunks.length) return;
     const tasks = (session.batches || []).filter((b) => Number(b.batchNumber) <= nextBatchIndex).map((b) => ({ ...b, submittedRows: Number(b.count || 0) }));
-    const plan = { sessionId: session.id, totalRows: mapped.length, chunks, nextBatchIndex, tasks, recovered: true };
+    const plan = { sessionId: session.id, totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, recovered: true, organisationsPending: true };
     setResumePlan(plan);
     setImportProgress({
       state: 'recovered',
       sessionId: session.id,
-      totalRows: mapped.length,
+      totalRows: recoveryRows.length,
       totalBatches: chunks.length,
       completedBatches: nextBatchIndex,
       completedRows: Number(session.submittedRows || 0),
@@ -464,14 +470,7 @@ function App() {
 
       setImportProgress({ state: 'preparing', totalRows: actionable.length, totalBatches: Math.ceil(actionable.length / 100), completedBatches: 0, completedRows: 0 });
       const serviceDeskId = await ensureDeskId();
-      const names = [...new Set(actionable.map((r) => r.organisation).filter(Boolean))];
-      const prepared = await prepareOrganisations(names);
-      const allOrgs = [...orgs, ...(prepared.organizations || [])];
-      const orgMap = new Map(allOrgs.map((o) => [organisationKey(o.name), o.id]));
-      const mapped = actionable.map((r) => ({
-        ...r,
-        organizationIds: r.organisation && orgMap.has(organisationKey(r.organisation)) ? [orgMap.get(organisationKey(r.organisation))] : []
-      }));
+      const { rows: mapped, created } = await attachOrganisationIds(actionable);
       const chunks = [];
       for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
       const sessionId = makeSessionId();
@@ -491,7 +490,7 @@ function App() {
       setImportStatus({
         submitted: mapped.length,
         tasks,
-        createdOrganizations: (prepared.created || []).length,
+        createdOrganizations: created.length,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
         sessionId: plan.sessionId
@@ -504,14 +503,26 @@ function App() {
     if (!resumePlan) return;
     setLoading(true); setError('');
     try {
-      const tasks = await submitPlan(resumePlan, resumePlan.nextBatchIndex, resumePlan.tasks || []);
+      let plan = resumePlan;
+      let createdOrganizations = 0;
+      if (plan.organisationsPending) {
+        // Only the batches still to submit need organisation ids; completed batches are left untouched.
+        const remaining = plan.chunks.slice(plan.nextBatchIndex);
+        const { rows: mapped, created } = await attachOrganisationIds(remaining.flat());
+        const remapped = [];
+        let offset = 0;
+        for (const chunk of remaining) { remapped.push(mapped.slice(offset, offset + chunk.length)); offset += chunk.length; }
+        plan = { ...plan, chunks: [...plan.chunks.slice(0, plan.nextBatchIndex), ...remapped], organisationsPending: false };
+        createdOrganizations = created.length;
+      }
+      const tasks = await submitPlan(plan, plan.nextBatchIndex, plan.tasks || []);
       setImportStatus({
-        submitted: resumePlan.totalRows,
+        submitted: plan.totalRows,
         tasks,
-        createdOrganizations: 0,
+        createdOrganizations,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
-        sessionId: resumePlan.sessionId,
+        sessionId: plan.sessionId,
         resumed: true
       });
     } catch (e) { setError(e.message); }
