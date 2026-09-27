@@ -1,12 +1,14 @@
 {
   "name": "nuvriqo-customer-organisation-manager",
-  "version": "0.1.2",
+  "version": "0.3.0",
   "private": true,
   "scripts": {
     "postinstall": "npm --prefix static install",
     "build": "npm --prefix static run build",
     "install:ui": "npm --prefix static install",
-    "test": "node --import ./test/register.mjs --test \"test/**/*.test.mjs\""
+    "test": "npm run test:unit && npm run check:ui",
+    "test:unit": "node --import ./test/register.mjs --test \"test/**/*.test.mjs\"",
+    "check:ui": "node static/node_modules/@nuvriqo/ui/bin/nuvriqo-ui-check.mjs static/src"
   },
   "dependencies": {
     "@forge/api": "^5.0.0",

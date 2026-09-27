@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@forge/bridge';
+import { invoke, view } from '@forge/bridge';
+import '@nuvriqo/ui/css';
+import { enableTheme } from '@nuvriqo/ui/theme';
+import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Field, Footer } from '@nuvriqo/ui/react';
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
-import './styles.css';
 
+// Injected by vite.config.js from the root package.json.
+const APP_VERSION = __APP_VERSION__;
 const tabs = ['Customers', 'Organisations', 'Import', 'Import History'];
 
 function parseCsv(text) {
@@ -496,82 +500,113 @@ function App() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [preview]);
 
-  return <div className="app">
-    <aside>
-      <div className="brand">Nuvriqo</div>
-      <div className="product">Customer & Organisation Manager</div>
-      {tabs.map((t) => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}
-    </aside>
-    <main>
-      <header>
-        <div><h1>{tab}</h1><p>Bulk customer and organisation administration for Jira Service Management.</p></div>
-        {(tab === 'Customers' || tab === 'Import') && <select value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>}
-      </header>
-      {error && <div className="error">{error}</div>}
+  const actionKind = { CREATE: 'success', UPDATE: 'info', SKIP: 'neutral', ERROR: 'danger', PENDING: 'warning' };
+  const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', RUNNING: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
+  const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
+  const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
+  // Plain numbers (no separators): the acceptance tests match this label exactly.
+  const importButtonLabel = `Import ${changeCount} customer change${changeCount === 1 ? '' : 's'}${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} error${previewSummary.ERROR === 1 ? '' : 's'})` : ''}`;
+  const deskPicker = (tab === 'Customers' || tab === 'Import') && serviceDesks.length > 0
+    ? <select className="nq-select" aria-label="Service project" value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>
+    : null;
 
-      {tab === 'Customers' && <section className="card">
-        <div className="toolbar"><input value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') loadCustomers(e.currentTarget.value); }} placeholder="Search customers by name or email"/><button onClick={() => loadCustomers(customerQuery)}>Search</button><button onClick={() => { setCustomerQuery(''); loadCustomers(''); }}>Reset</button></div>
-        <table><thead><tr><th>Name</th><th>Email</th><th>Account</th></tr></thead><tbody>{customers.map((c) => <tr key={c.accountId || c.key}><td>{c.displayName}</td><td>{c.emailAddress || '—'}</td><td className="muted">{c.accountId || c.key}</td></tr>)}</tbody></table>
-        {!loading && !customers.length && <div className="empty">No customers returned for this service project.</div>}
-      </section>}
+  return <div className="nq-page">
+    <AppHeader product="Customer & Organisation Manager" subtitle="Bulk customer and organisation administration for Jira Service Management." version={APP_VERSION} actions={deskPicker}/>
+    <Tabs items={tabs.map((t) => ({ id: t, label: t }))} active={tab} onChange={setTab}/>
+    <div className="nq-stack">
+      {error && <Notice kind="error">{error}</Notice>}
 
-      {tab === 'Organisations' && <section className="card">
-        <div className="toolbar"><input value={orgQuery} onChange={(e) => setOrgQuery(e.target.value)} placeholder="Search organisations"/><button onClick={loadOrgs}>Refresh</button></div>
-        {orgs.length > 0 && <div className="empty">{loading ? 'Loading… ' : ''}{filteredOrgs.length === orgs.length ? `${orgs.length.toLocaleString()} organisations` : `${filteredOrgs.length.toLocaleString()} of ${orgs.length.toLocaleString()} organisations match`}{filteredOrgs.length > 500 ? ' (showing the first 500; search to narrow)' : ''}</div>}
-        <div className="grid">{filteredOrgs.slice(0, 500).map((o) => <div className="org" key={o.id}><strong>{o.name}</strong><span>ID {o.id}</span></div>)}</div>
-        {!loading && !filteredOrgs.length && <div className="empty">No organisations match your search.</div>}
-      </section>}
+      {tab === 'Customers' && <Card title="Customers" description="Customers of the selected service project.">
+        <div className="nq-filters">
+          <input className="nq-input nq-input--search" value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') loadCustomers(e.currentTarget.value); }} placeholder="Search customers by name or email" aria-label="Search customers"/>
+          <Button appearance="primary" onClick={() => loadCustomers(customerQuery)}>Search</Button>
+          <Button onClick={() => { setCustomerQuery(''); loadCustomers(''); }}>Reset</Button>
+        </div>
+        {loading && !customers.length ? <Loading text="Loading customers…"/>
+          : customers.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Name</th><th>Email</th><th>Account</th></tr></thead><tbody>{customers.map((c) => <tr key={c.accountId || c.key}><td>{c.displayName}</td><td>{c.emailAddress || '—'}</td><td className="nq-muted">{c.accountId || c.key}</td></tr>)}</tbody></table></div>
+            : <EmptyState title="No customers found" compact>No customers were returned for this service project{customerQuery ? ' and search' : ''}.</EmptyState>}
+      </Card>}
+
+      {tab === 'Organisations' && <Card title="Organisations" description={orgs.length
+        ? `${filteredOrgs.length === orgs.length ? plural(orgs.length, 'organisation') : `${filteredOrgs.length.toLocaleString()} of ${plural(orgs.length, 'organisation')} match`}${loading ? ' · loading more…' : ''}`
+        : 'Every organisation on this Jira site.'} actions={<Button appearance="subtle" onClick={loadOrgs} disabled={loading}>Refresh</Button>}>
+        <div className="nq-filters">
+          <input className="nq-input nq-input--search" value={orgQuery} onChange={(e) => setOrgQuery(e.target.value)} placeholder="Search organisations" aria-label="Search organisations"/>
+        </div>
+        {loading && !orgs.length ? <Loading text="Loading organisations…"/>
+          : filteredOrgs.length ? <>
+            <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Name</th><th>ID</th></tr></thead><tbody>{filteredOrgs.slice(0, 500).map((o) => <tr key={o.id}><td>{o.name}</td><td className="nq-muted">{o.id}</td></tr>)}</tbody></table></div>
+            {filteredOrgs.length > 500 && <p className="nq-help">Showing the first 500. Search to narrow the list.</p>}
+          </>
+            : <EmptyState title={orgs.length ? 'No organisations match your search.' : 'No organisations yet'} compact>{orgs.length ? 'Try a different name.' : 'Organisations are created when an import names one that does not exist yet.'}</EmptyState>}
+      </Card>}
 
       {tab === 'Import' && <>
-        <section className="card upload"><h2>Advanced customer import</h2><p>CSV headers: Email, Full Name/Display Name, Organisation. The preview checks Jira before anything is changed.</p><input type="file" accept=".csv,text/csv" onChange={onFile}/></section>
+        <Card title="Import" description="Upload a CSV with Email, Full Name (or Display Name) and Organisation columns. The preview checks Jira before anything is changed.">
+          <Field label="CSV file" htmlFor="csv-file"><input id="csv-file" className="nq-input" type="file" accept=".csv,text/csv" onChange={onFile}/></Field>
+        </Card>
 
-        {previewSummary.ERROR > 0 && <section className="card error">
-          <h3>{previewSummary.ERROR.toLocaleString()} row{previewSummary.ERROR === 1 ? ' will' : 's will'} be excluded from this import</h3>
-          {csvInfo?.missingHeaders?.length > 0 && <p><strong>CSV format problem:</strong> Missing required column{csvInfo.missingHeaders.length > 1 ? 's' : ''}: <strong>{csvInfo.missingHeaders.join(', ')}</strong>. Detected headers: {csvInfo.headers.length ? csvInfo.headers.join(', ') : 'none'}.</p>}
-          {csvInfo?.missingHeaders?.length === 0 && <p>The valid rows can continue. These error rows will not be sent to Jira and can be corrected and imported separately later.</p>}
-          {errorReasons.slice(0, 5).map(([reason, count]) => <div key={reason}><strong>{count.toLocaleString()} row{count === 1 ? '' : 's'}:</strong> {reason}</div>)}
-        </section>}
+        {previewSummary.ERROR > 0 && <Notice kind="error" title={`${plural(previewSummary.ERROR, 'row')} will be excluded from this import`}>
+          {csvInfo?.missingHeaders?.length > 0 && <p><strong>CSV format problem:</strong> missing required column{csvInfo.missingHeaders.length > 1 ? 's' : ''} <strong>{csvInfo.missingHeaders.join(', ')}</strong>. Detected headers: {csvInfo.headers.length ? csvInfo.headers.join(', ') : 'none'}.</p>}
+          {csvInfo?.missingHeaders?.length === 0 && <p>The valid rows can continue. These rows won't be sent to Jira; correct them and import them separately later.</p>}
+          {errorReasons.slice(0, 5).map(([reason, count]) => <div key={reason}><strong>{plural(count, 'row')}:</strong> {reason}</div>)}
+        </Notice>}
 
-        {comparisonProgress && <section className="card">
-          <h3>{comparisonProgress.complete ? 'Jira comparison complete' : 'Large import Jira comparison'}</h3>
+        {comparisonProgress && <Card title={comparisonProgress.complete ? 'Jira comparison complete' : 'Large import Jira comparison'}>
           {comparisonProgress.complete
-            ? <p><strong>All valid CSV rows have now been checked against Jira.</strong> Scanned {comparisonProgress.customersScanned.toLocaleString()} existing customer email{comparisonProgress.customersScanned === 1 ? '' : 's'} in {comparisonProgress.batches} controlled batch{comparisonProgress.batches === 1 ? '' : 'es'}.</p>
-            : <p>Building a safe customer index from Jira in controlled batches… {comparisonProgress.customersScanned.toLocaleString()} existing customer email{comparisonProgress.customersScanned === 1 ? '' : 's'} scanned so far.</p>}
-        </section>}
+            ? <p>All valid CSV rows have been checked against Jira. Scanned {plural(comparisonProgress.customersScanned, 'existing customer email')} in {plural(comparisonProgress.batches, 'batch', 'batches')}.</p>
+            : <Loading text={`Building the customer index from Jira… ${plural(comparisonProgress.customersScanned, 'customer email')} scanned so far.`}/>}
+        </Card>}
 
-        {previewSummary.PENDING > 0 && !comparisonProgress?.complete && <section className="card">
-          <h3>Large import safety check</h3>
-          <p><strong>{previewSummary.PENDING.toLocaleString()} valid rows are being checked.</strong>{previewSummary.ERROR > 0 ? ` ${previewSummary.ERROR.toLocaleString()} error row${previewSummary.ERROR === 1 ? '' : 's'} will be excluded automatically.` : ''}</p>
-          <p>Import stays disabled until the batched Jira comparison is complete, so no unchecked rows can be submitted.</p>
-        </section>}
+        {previewSummary.PENDING > 0 && !comparisonProgress?.complete && <Notice kind="warning" title="Large import safety check">
+          <p><strong>{previewSummary.PENDING.toLocaleString()} valid rows are being checked.</strong>{previewSummary.ERROR > 0 ? ` ${plural(previewSummary.ERROR, 'error row')} will be excluded automatically.` : ''}</p>
+          <p>Import stays disabled until the Jira comparison is complete, so no unchecked rows can be submitted.</p>
+        </Notice>}
 
-        {rows.length > 0 && <section className="stats"><div><b>{summary.total}</b><span>Rows</span></div><div><b>{previewSummary.CREATE}</b><span>Create</span></div><div><b>{previewSummary.UPDATE}</b><span>Update</span></div><div><b>{previewSummary.SKIP}</b><span>Skip</span></div><div><b>{previewSummary.ERROR}</b><span>Excluded</span></div></section>}
+        {rows.length > 0 && <div className="nq-stats">
+          <div className="nq-stat"><strong className="nq-stat__value">{summary.total.toLocaleString()}</strong><span className="nq-stat__label">Rows</span></div>
+          <div className="nq-stat nq-stat--success"><strong className="nq-stat__value">{previewSummary.CREATE.toLocaleString()}</strong><span className="nq-stat__label">Create</span></div>
+          <div className="nq-stat nq-stat--info"><strong className="nq-stat__value">{previewSummary.UPDATE.toLocaleString()}</strong><span className="nq-stat__label">Update</span></div>
+          <div className="nq-stat"><strong className="nq-stat__value">{previewSummary.SKIP.toLocaleString()}</strong><span className="nq-stat__label">Skip</span></div>
+          <div className="nq-stat nq-stat--danger"><strong className="nq-stat__value">{previewSummary.ERROR.toLocaleString()}</strong><span className="nq-stat__label">Excluded</span></div>
+        </div>}
 
-        {previewing && <section className="card"><strong>Checking existing Jira customers and organisations…</strong></section>}
+        {previewing && <Loading text="Checking existing Jira customers and organisations…"/>}
 
-        {preview.length > 0 && <section className="card"><h3>Import preview</h3><table><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><strong>{r.action}</strong></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table>{preview.length > 500 && <div className="empty">Showing the first 500 of {preview.length.toLocaleString()} preview rows.</div>}</section>}
+        {preview.length > 0 && <Card title="Import preview" description={preview.length > 500 ? `Showing the first 500 of ${preview.length.toLocaleString()} rows.` : undefined}>
+          <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table></div>
+        </Card>}
 
-        {importProgress && <section className={`card ${importProgress.state === 'failed' ? 'error' : ''}`}>
-          <h3>{importProgress.state === 'complete' ? 'Import batches submitted' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}</h3>
-          {importProgress.state === 'preparing' && <p>Preparing organisations and {importProgress.totalRows.toLocaleString()} customer changes for controlled submission.</p>}
-          {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {importProgress.totalRows.toLocaleString()} rows were already submitted. Recovery will continue from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original saved row plan.</p>}
-          {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {importProgress.totalRows.toLocaleString()} rows submitted</strong> across {importProgress.completedBatches} of {importProgress.totalBatches} batch{importProgress.totalBatches === 1 ? '' : 'es'}.</p>}
-          {importProgress.state === 'running' && <p>Currently processing batch {importProgress.currentBatch} of {importProgress.totalBatches}{importProgress.attempt > 1 ? ` — retry ${importProgress.attempt} of 3` : ''}.</p>}
-          {importProgress.state === 'failed' && <p>Batch {importProgress.currentBatch} failed after three attempts. Earlier batches remain recorded and the failed batch can be retried with the same idempotency key, so already accepted batches are not intentionally resubmitted.</p>}
-        </section>}
+        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches submitted' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
+          {importProgress.state === 'preparing' && <Loading text={`Preparing organisations and ${plural(importProgress.totalRows, 'customer change')}…`}/>}
+          {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
+          {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
+          {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
+          {importProgress.state === 'failed' && <Notice kind="error">Batch {importProgress.currentBatch} failed after three attempts. Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</Notice>}
+        </Card>}
 
-        {rows.length > 0 && !resumePlan && <button className="primary" disabled={loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : `Import ${previewSummary.CREATE + previewSummary.UPDATE} customer changes${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} errors)` : ''}`}</button>}
-        {resumePlan && <button className="primary" disabled={loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</button>}
+        {(rows.length > 0 || resumePlan) && <div className="nq-inline">
+          {rows.length > 0 && !resumePlan && <Button appearance="primary" disabled={loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : importButtonLabel}</Button>}
+          {resumePlan && <Button appearance="primary" disabled={loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</Button>}
+        </div>}
 
-        {importStatus && <div className="success">Submitted {importStatus.submitted} customer changes in {importStatus.tasks.length} bulk task(s). Skipped {importStatus.skipped} unchanged row(s). Excluded {importStatus.excludedErrors} error row(s). Created {importStatus.createdOrganizations} missing organisation(s). Import session: {importStatus.sessionId}.</div>}
+        {importStatus && <Notice kind="success" title={importStatus.resumed ? 'Import resumed' : 'Import submitted'}>Submitted {plural(importStatus.submitted, 'customer change')} in {plural(importStatus.tasks.length, 'bulk task')}. Skipped {plural(importStatus.skipped, 'unchanged row')}. Excluded {plural(importStatus.excludedErrors, 'error row')}. Created {plural(importStatus.createdOrganizations, 'missing organisation')}. Import session: {importStatus.sessionId}.</Notice>}
       </>}
 
-      {tab === 'Import History' && <>
-        <section className="card"><div className="toolbar"><button onClick={loadHistory}>Refresh status</button></div><h3>Import sessions</h3><table><thead><tr><th>Started</th><th>File</th><th>Progress</th><th>Status</th><th>Session</th></tr></thead><tbody>{importSessions.map((s) => <tr key={s.id}><td>{new Date(s.createdAt).toLocaleString()}</td><td>{s.fileName || '—'}</td><td>{Number(s.submittedRows || 0).toLocaleString()} / {Number(s.totalRows || 0).toLocaleString()} rows · {Number(s.completedBatches || 0)} / {Number(s.totalBatches || 0)} batches</td><td>{s.status || 'Unknown'}</td><td className="muted">{s.id}</td></tr>)}</tbody></table>{!importSessions.length && <div className="empty">No import sessions recorded yet.</div>}</section>
-        <section className="card"><h3>Bulk task history</h3><table><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td>{h.task?.status || 'Unknown'}</td><td>{h.task?.failures?.length || 0}</td><td className="muted">{h.taskId}</td></tr>)}</tbody></table>{!history.length && <div className="empty">No bulk tasks recorded yet.</div>}</section>
-      </>}
-    </main>
+      {tab === 'Import History' && <Card title="Import History" description="Import sessions and the Jira bulk tasks they submitted." actions={<Button appearance="subtle" onClick={loadHistory}>Refresh status</Button>}>
+        <div className="nq-stack">
+          <h3 className="nq-card__title">Import sessions</h3>
+          {importSessions.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Started</th><th>File</th><th>Progress</th><th>Status</th><th>Session</th></tr></thead><tbody>{importSessions.map((s) => <tr key={s.id}><td>{new Date(s.createdAt).toLocaleString()}</td><td>{s.fileName || '—'}</td><td>{Number(s.submittedRows || 0).toLocaleString()} / {Number(s.totalRows || 0).toLocaleString()} rows · {Number(s.completedBatches || 0)} / {Number(s.totalBatches || 0)} batches</td><td><Lozenge kind={statusKind(s.status)}>{s.status || 'Unknown'}</Lozenge></td><td className="nq-muted">{s.id}</td></tr>)}</tbody></table></div>
+            : <EmptyState title="No import sessions yet" compact>Sessions appear here once you run an import.</EmptyState>}
+          <h3 className="nq-card__title">Bulk task history</h3>
+          {history.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td><Lozenge kind={statusKind(h.task?.status)}>{h.task?.status || 'Unknown'}</Lozenge></td><td>{h.task?.failures?.length || 0}</td><td className="nq-muted">{h.taskId}</td></tr>)}</tbody></table></div>
+            : <EmptyState title="No bulk tasks yet" compact>Each import batch is recorded here with its Jira task status.</EmptyState>}
+        </div>
+      </Card>}
+    </div>
+    <Footer product="Customer & Organisation Manager" version={APP_VERSION}/>
   </div>;
 }
 
+enableTheme(view);
 createRoot(document.getElementById('root')).render(<App/>);

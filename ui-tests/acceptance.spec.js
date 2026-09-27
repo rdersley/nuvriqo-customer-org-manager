@@ -36,10 +36,10 @@ async function openManager(page) {
 
 test('Customer & Organisation Manager opens directly in Jira administration', async ({ page }) => {
   const manager = await openManager(page);
-  await expect(manager.getByRole('button', { name: 'Customers', exact: true })).toBeVisible();
-  await expect(manager.getByRole('button', { name: 'Organisations', exact: true })).toBeVisible();
-  await expect(manager.getByRole('button', { name: 'Import', exact: true })).toBeVisible();
-  await expect(manager.getByRole('button', { name: 'Import History', exact: true })).toBeVisible();
+  await expect(manager.getByRole('tab', { name: 'Customers', exact: true })).toBeVisible();
+  await expect(manager.getByRole('tab', { name: 'Organisations', exact: true })).toBeVisible();
+  await expect(manager.getByRole('tab', { name: 'Import', exact: true })).toBeVisible();
+  await expect(manager.getByRole('tab', { name: 'Import History', exact: true })).toBeVisible();
 });
 
 test('customer administration exposes working search controls', async ({ page }) => {
@@ -63,14 +63,14 @@ test('selected service project customer retrieval succeeds without API 412', asy
 
 test('organisation administration exposes search', async ({ page }) => {
   const manager = await openManager(page);
-  await manager.getByRole('button', { name: 'Organisations', exact: true }).click();
+  await manager.getByRole('tab', { name: 'Organisations', exact: true }).click();
   await expect(manager.getByRole('heading', { name: 'Organisations', exact: true })).toBeVisible();
   await expect(manager.getByPlaceholder('Search organisations')).toBeVisible();
 });
 
 test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
   const manager = await openManager(page);
-  await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  await manager.getByRole('tab', { name: 'Import', exact: true }).click();
   await expect(manager.getByRole('heading', { name: 'Import', exact: true })).toBeVisible();
   await expect(manager.locator('body')).toContainText(/preview checks Jira before anything is changed/i);
   await expect(manager.locator('input[type="file"]')).toBeVisible();
@@ -79,7 +79,7 @@ test('import screen exposes Jira-aware preview workflow', async ({ page }) => {
 test('16k valid CSV completes batched Jira comparison without API 412', async ({ page }) => {
   test.setTimeout(90000);
   const manager = await openManager(page);
-  await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  await manager.getByRole('tab', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
   for (let i = 1; i <= 16413; i += 1) csv.push(`qa-large-${i}@example.invalid,QA Large ${i},QA Organisation`);
   await manager.locator('input[type="file"]').setInputFiles({
@@ -96,7 +96,7 @@ test('16k valid CSV completes batched Jira comparison without API 412', async ({
 test('large mixed CSV excludes errors and enables valid customer changes', async ({ page }) => {
   test.setTimeout(90000);
   const manager = await openManager(page);
-  await manager.getByRole('button', { name: 'Import', exact: true }).click();
+  await manager.getByRole('tab', { name: 'Import', exact: true }).click();
   const csv = ['Email,Full Name,Organisation'];
   for (let i = 1; i <= 501; i += 1) csv.push(`qa-mixed-${i}@example.invalid,QA Mixed ${i},QA Organisation`);
   csv.push('not-an-email,Bad Email,QA Organisation');
@@ -116,7 +116,7 @@ test('large mixed CSV excludes errors and enables valid customer changes', async
 
 test('import history exposes aggregate recovery sessions separately from bulk tasks', async ({ page }) => {
   const manager = await openManager(page);
-  await manager.getByRole('button', { name: 'Import History', exact: true }).click();
+  await manager.getByRole('tab', { name: 'Import History', exact: true }).click();
   await expect(manager.getByRole('heading', { name: 'Import History', exact: true })).toBeVisible();
   await expect(manager.getByRole('heading', { name: 'Import sessions', exact: true })).toBeVisible();
   await expect(manager.getByRole('heading', { name: 'Bulk task history', exact: true })).toBeVisible();
