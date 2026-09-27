@@ -554,7 +554,7 @@ function App() {
 
         {comparisonProgress && <Card title={comparisonProgress.complete ? 'Jira comparison complete' : 'Large import Jira comparison'}>
           {comparisonProgress.complete
-            ? <p>All valid CSV rows have been checked against Jira. Scanned {plural(comparisonProgress.customersScanned, 'existing customer email')} in {plural(comparisonProgress.batches, 'batch', 'batches')}.</p>
+            ? <p>All valid CSV rows have now been checked against Jira. Scanned {plural(comparisonProgress.customersScanned, 'existing customer email')} in {plural(comparisonProgress.batches, 'batch', 'batches')}.</p>
             : <Loading text={`Building the customer index from Jira… ${plural(comparisonProgress.customersScanned, 'customer email')} scanned so far.`}/>}
         </Card>}
 
