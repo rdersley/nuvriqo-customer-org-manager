@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@forge/bridge';
+import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import './styles.css';
 
 const tabs = ['Customers', 'Organisations', 'Import', 'Import History'];
@@ -60,57 +61,6 @@ function validateRowsLocally(rows) {
   });
   const invalidRowCount = new Set(errors.map((e) => e.row)).size;
   return { total: rows.length, valid: Math.max(0, rows.length - invalidRowCount), errors };
-}
-
-const organisationKey = (name) => String(name || '').trim().toLowerCase();
-
-// Pages through every Jira organisation (in resumable resolver calls) looking for the given names.
-// Throws rather than returning a partial answer, so callers never treat an unscanned org as missing.
-async function lookupOrganisations(names) {
-  const byKey = new Map();
-  (names || []).map((n) => String(n || '').trim()).filter(Boolean)
-    .forEach((n) => { if (!byKey.has(organisationKey(n))) byKey.set(organisationKey(n), n); });
-  const wanted = [...byKey.values()];
-  const found = new Map();
-  let remaining = wanted;
-  let start = 0;
-  for (let calls = 0; remaining.length; calls += 1) {
-    if (calls >= 500) throw new Error('Organisation lookup safety limit reached before Jira reported the final page.');
-    const r = await invoke('getImportOrganizations', { names: remaining, start });
-    (r.organizations || []).forEach((o) => found.set(organisationKey(o.name), o));
-    remaining = remaining.filter((n) => !found.has(organisationKey(n)));
-    if (r.complete) break;
-    const nextStart = Number(r.nextStart);
-    if (remaining.length && (!Number.isFinite(nextStart) || nextStart <= start)) {
-      throw new Error('Jira organisation pagination stopped before the lookup was complete.');
-    }
-    start = nextStart;
-  }
-  return { found, missing: remaining };
-}
-
-// Finds existing organisations and creates only those a complete scan proved are missing.
-async function prepareOrganisations(names) {
-  const { found, missing } = await lookupOrganisations(names);
-  const created = [];
-  for (let i = 0; i < missing.length; i += 20) {
-    const r = await invoke('createImportOrganizations', { names: missing.slice(i, i + 20) });
-    created.push(...(r.created || []));
-  }
-  return { organizations: [...found.values(), ...created], created };
-}
-
-// Finds or creates every organisation the rows name, then returns the rows with organizationIds attached.
-async function attachOrganisationIds(rows) {
-  const prepared = await prepareOrganisations(rows.map((r) => r.organisation));
-  const idByKey = new Map(prepared.organizations.map((o) => [organisationKey(o.name), o.id]));
-  return {
-    rows: rows.map((r) => {
-      const key = organisationKey(r.organisation);
-      return { ...r, organizationIds: idByKey.has(key) ? [idByKey.get(key)] : [] };
-    }),
-    created: prepared.created
-  };
 }
 
 function invalidRowMap(validationResult) {
@@ -200,8 +150,7 @@ function App() {
   async function loadOrgs() {
     setLoading(true); setError('');
     try {
-      const r = await invoke('getOrganizations');
-      setOrgs(r.values || []);
+      await loadAllOrganisations(invoke, (list) => setOrgs([...list]));
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }
@@ -223,7 +172,7 @@ function App() {
     setPreviewing(true); setError('');
     try {
       const serviceDeskId = await ensureDeskId();
-      const { found: existingOrgs } = await lookupOrganisations(parsed.map((row) => row.organisation));
+      const { found: existingOrgs } = await lookupOrganisations(invoke, parsed.map((row) => row.organisation));
       const orgNames = new Set(existingOrgs.keys());
       const invalidRows = invalidRowMap(validationResult);
       const results = parsed.map((row, i) => invalidRows.has(i)
@@ -238,8 +187,7 @@ function App() {
         try {
           const found = await invoke('getCustomers', { serviceDeskId, query: String(row.email || '').trim() });
           const exact = (found.values || []).find((c) => String(c.emailAddress || '').toLowerCase() === String(row.email || '').trim().toLowerCase());
-          const orgNote = row.organisation && !orgNames.has(organisationKey(row.organisation))
-            ? `Organisation “${row.organisation}” will be created.` : '';
+          const orgNote = organisationNote(row, orgNames);
           results[i] = !exact
             ? { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' }
             : String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()
@@ -290,15 +238,19 @@ function App() {
         setComparisonProgress({ complete: false, customersScanned: byEmail.size, batches });
       }
 
+      const validRows = parsed.filter((_, i) => !invalidRows.has(i));
+      const { found: existingOrgs } = await lookupOrganisations(invoke, validRows.map((row) => row.organisation));
+      const orgNames = new Set(existingOrgs.keys());
       const results = parsed.map((row, i) => {
         if (invalidRows.has(i)) return { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') };
         const email = String(row.email || '').trim().toLowerCase();
         const exact = byEmail.get(email);
-        if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: 'New customer.' };
+        const orgNote = organisationNote(row, orgNames);
+        if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' };
         if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) {
-          return { ...row, rowNumber: i + 2, action: 'SKIP', reason: 'Customer already matches Jira.' };
+          return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
         }
-        return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}.` };
+        return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
       });
       setPreview(results);
       setComparisonProgress({ complete: true, customersScanned: byEmail.size, batches });
@@ -470,7 +422,7 @@ function App() {
 
       setImportProgress({ state: 'preparing', totalRows: actionable.length, totalBatches: Math.ceil(actionable.length / 100), completedBatches: 0, completedRows: 0 });
       const serviceDeskId = await ensureDeskId();
-      const { rows: mapped, created } = await attachOrganisationIds(actionable);
+      const { rows: mapped, created } = await attachOrganisationIds(invoke, actionable);
       const chunks = [];
       for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
       const sessionId = makeSessionId();
@@ -508,7 +460,7 @@ function App() {
       if (plan.organisationsPending) {
         // Only the batches still to submit need organisation ids; completed batches are left untouched.
         const remaining = plan.chunks.slice(plan.nextBatchIndex);
-        const { rows: mapped, created } = await attachOrganisationIds(remaining.flat());
+        const { rows: mapped, created } = await attachOrganisationIds(invoke, remaining.flat());
         const remapped = [];
         let offset = 0;
         for (const chunk of remaining) { remapped.push(mapped.slice(offset, offset + chunk.length)); offset += chunk.length; }
@@ -565,7 +517,8 @@ function App() {
 
       {tab === 'Organisations' && <section className="card">
         <div className="toolbar"><input value={orgQuery} onChange={(e) => setOrgQuery(e.target.value)} placeholder="Search organisations"/><button onClick={loadOrgs}>Refresh</button></div>
-        <div className="grid">{filteredOrgs.map((o) => <div className="org" key={o.id}><strong>{o.name}</strong><span>ID {o.id}</span></div>)}</div>
+        {orgs.length > 0 && <div className="empty">{loading ? 'Loading… ' : ''}{filteredOrgs.length === orgs.length ? `${orgs.length.toLocaleString()} organisations` : `${filteredOrgs.length.toLocaleString()} of ${orgs.length.toLocaleString()} organisations match`}{filteredOrgs.length > 500 ? ' (showing the first 500; search to narrow)' : ''}</div>}
+        <div className="grid">{filteredOrgs.slice(0, 500).map((o) => <div className="org" key={o.id}><strong>{o.name}</strong><span>ID {o.id}</span></div>)}</div>
         {!loading && !filteredOrgs.length && <div className="empty">No organisations match your search.</div>}
       </section>}
 

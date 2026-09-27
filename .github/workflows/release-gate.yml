@@ -32,6 +32,8 @@ jobs:
         shell: bash
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+      - name: Unit tests
+        run: npm test
       - name: Build
         run: npm run build
       - name: Forge lint
