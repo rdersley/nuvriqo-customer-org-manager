@@ -274,10 +274,14 @@ secureDefine('getImportHistory', async () => {
 // (240 KiB), so it is saved in chunks under import-session-rows:<id>:<n>.
 const ROW_PLAN_CHUNK = 5000;
 
+// Import records (history, sessions, row plans, recovery pointers) expire 180 days after their last
+// update; saved mappings are configuration and stay until deleted. Documented in docs/DATA_HANDLING.md.
+export const IMPORT_RECORD_RETENTION = { ttl: { value: 180, unit: 'DAYS' } };
+
 async function saveRowPlan(sessionId, rowNumbers) {
   const chunks = Math.ceil(rowNumbers.length / ROW_PLAN_CHUNK);
   for (let i = 0; i < chunks; i += 1) {
-    await kvs.set(`import-session-rows:${sessionId}:${i}`, rowNumbers.slice(i * ROW_PLAN_CHUNK, (i + 1) * ROW_PLAN_CHUNK));
+    await kvs.set(`import-session-rows:${sessionId}:${i}`, rowNumbers.slice(i * ROW_PLAN_CHUNK, (i + 1) * ROW_PLAN_CHUNK), IMPORT_RECORD_RETENTION);
   }
   return chunks;
 }
@@ -373,8 +377,8 @@ secureDefine('startImportSession', async ({ payload }) => {
     updatedAt: createdAt,
     batches: []
   };
-  await kvs.set(key, session);
-  await kvs.set(`import-recovery:${serviceDeskId}:${fingerprint}`, { sessionId: id, updatedAt: createdAt });
+  await kvs.set(key, session, IMPORT_RECORD_RETENTION);
+  await kvs.set(`import-recovery:${serviceDeskId}:${fingerprint}`, { sessionId: id, updatedAt: createdAt }, IMPORT_RECORD_RETENTION);
   return session;
 }, { write: true });
 
@@ -451,7 +455,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     type: 'CUSTOMER_PROFILE_UPSERT'
   };
 
-  await kvs.set(`import:${history.id}`, history);
+  await kvs.set(`import:${history.id}`, history, IMPORT_RECORD_RETENTION);
 
   if (importSessionId) {
     const sessionKey = `import-session:${importSessionId}`;
@@ -479,7 +483,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
       status: nextStatus,
       updatedAt: createdAt,
       batches
-    });
+    }, IMPORT_RECORD_RETENTION);
     if (nextStatus === 'SUBMITTED' && previous?.fingerprint && previous?.serviceDeskId) {
       await kvs.delete(`import-recovery:${previous.serviceDeskId}:${previous.fingerprint}`);
     }

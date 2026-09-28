@@ -2,8 +2,8 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { site, resetSite } from './mocks/api.mjs';
-import { store, resetStore } from './mocks/kvs.mjs';
-import { handler, APP_VERSION } from '../src/index.js';
+import { store, setOptions, resetStore } from './mocks/kvs.mjs';
+import { handler, APP_VERSION, IMPORT_RECORD_RETENTION } from '../src/index.js';
 import { resolverLicenseAllows } from '../src/license.js';
 
 const DEV = { environmentType: 'DEVELOPMENT' };
@@ -100,4 +100,16 @@ test('completing every batch marks the session submitted and clears the recovery
   assert.equal(store.has(`import-recovery:1:${fingerprint}`), false);
   assert.equal(await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), null);
   assert.equal(site.bulkRequests[0].idempotencyKey, 's2-batch-1');
+});
+
+test('import records expire after 180 days; saved mappings do not', async () => {
+  assert.deepEqual(IMPORT_RECORD_RETENTION, { ttl: { value: 180, unit: 'DAYS' } });
+  await call('startImportSession', { id: 's3', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2, 3], totalRows: 2, totalBatches: 1 });
+  await call('bulkUpsertCustomers', { rows: [{ email: 'a@x.test', displayName: 'A' }], importSessionId: 's3', batchNumber: 1, totalBatches: 1, idempotencyKey: 's3-batch-1' });
+  await call('saveImportMapping', { id: 'map1', name: 'Default', serviceDeskId: '1', emailHeader: 'Email', displayNameHeader: 'Name' });
+
+  const importKeys = [...store.keys()].filter((k) => k.startsWith('import-session') || k.startsWith('import:') || k.startsWith('import-recovery'));
+  assert.ok(importKeys.length >= 3, 'expected session, row plan and history records');
+  for (const key of importKeys) assert.deepEqual(setOptions.get(key), IMPORT_RECORD_RETENTION, key + ' should expire');
+  assert.equal(setOptions.get('import-mapping:map1'), undefined, 'mappings are configuration and must not expire');
 });
