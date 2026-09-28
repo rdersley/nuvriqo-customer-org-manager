@@ -1,6 +1,10 @@
 import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 import { kvs, WhereConditions } from '@forge/kvs';
+import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from './license.js';
+
+// Must match package.json (a unit test checks this).
+export const APP_VERSION = '0.3.0';
 
 const resolver = new Resolver();
 
@@ -27,14 +31,27 @@ async function requireAdmin() {
   }
 }
 
-function secureDefine(name, handler) {
+// Every resolver except health needs a Jira administrator. Resolvers that change Jira or app
+// storage (`{ write: true }`) also need an active licence; see src/license.js.
+function secureDefine(name, handler, { write = false } = {}) {
   resolver.define(name, async (request) => {
     await requireAdmin();
+    if (write && !resolverLicenseAllows(request?.context)) {
+      const error = new Error(UNLICENSED_MESSAGE);
+      error.status = 402;
+      throw error;
+    }
     return handler(request);
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.3.0' }));
+resolver.define('health', async () => ({ ok: true, version: APP_VERSION }));
+
+secureDefine('getAppStatus', async ({ context }) => ({
+  version: APP_VERSION,
+  licensed: resolverLicenseAllows(context),
+  production: isProductionContext(context)
+}));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
@@ -109,7 +126,7 @@ secureDefine('createOrganization', async ({ payload }) => {
     body: JSON.stringify({ name })
   });
   return jsonResponse(res);
-});
+}, { write: true });
 
 const ORG_LOOKUP_MAX_PAGES = 40;
 const ORG_LOOKUP_BUDGET_MS = 15000;
@@ -199,7 +216,7 @@ secureDefine('createImportOrganizations', async ({ payload }) => {
     created.push({ id: org.id, name: org.name });
   }
   return { created };
-});
+}, { write: true });
 
 secureDefine('getImportMappings', async () => {
   const result = await kvs.query().where('key', WhereConditions.beginsWith('import-mapping:')).limit(50).getMany();
@@ -232,14 +249,14 @@ secureDefine('saveImportMapping', async ({ payload }) => {
   };
   await kvs.set(key, mapping);
   return mapping;
-});
+}, { write: true });
 
 secureDefine('deleteImportMapping', async ({ payload }) => {
   const id = String(payload?.id || '').trim();
   if (!id) throw new Error('Mapping id is required');
   await kvs.delete(`import-mapping:${id}`);
   return { ok: true, id };
-});
+}, { write: true });
 
 secureDefine('getTaskStatus', async ({ payload }) => {
   const taskId = String(payload?.taskId || '');
@@ -253,9 +270,36 @@ secureDefine('getImportHistory', async () => {
   return (result.results || []).map(r => r.value).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 
+// A session's row plan can hold up to 50,000 row numbers, which is more than one KVS value can store
+// (240 KiB), so it is saved in chunks under import-session-rows:<id>:<n>.
+const ROW_PLAN_CHUNK = 5000;
+
+async function saveRowPlan(sessionId, rowNumbers) {
+  const chunks = Math.ceil(rowNumbers.length / ROW_PLAN_CHUNK);
+  for (let i = 0; i < chunks; i += 1) {
+    await kvs.set(`import-session-rows:${sessionId}:${i}`, rowNumbers.slice(i * ROW_PLAN_CHUNK, (i + 1) * ROW_PLAN_CHUNK));
+  }
+  return chunks;
+}
+
+async function loadRowPlan(session) {
+  if (Array.isArray(session?.actionableRowNumbers)) return session.actionableRowNumbers; // sessions saved before chunking
+  const rows = [];
+  for (let i = 0; i < Number(session?.rowPlanChunks || 0); i += 1) {
+    const chunk = await kvs.get(`import-session-rows:${session.id}:${i}`);
+    if (!Array.isArray(chunk)) throw new Error('The saved recovery row plan is incomplete. Start a new import rather than guessing.');
+    rows.push(...chunk);
+  }
+  return rows;
+}
+
+// Lists sessions without their row plans (the Import History tab only needs the summary).
 secureDefine('getImportSessions', async () => {
   const result = await kvs.query().where('key', WhereConditions.beginsWith('import-session:')).limit(50).getMany();
-  return (result.results || []).map(r => r.value).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  return (result.results || []).map((r) => {
+    const { actionableRowNumbers, ...session } = r.value || {};
+    return session;
+  }).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 });
 
 secureDefine('getImportSessionSummaries', async () => {
@@ -276,7 +320,7 @@ secureDefine('findRecoverableImportSession', async ({ payload }) => {
   if (!pointer?.sessionId) return null;
   const session = await kvs.get(`import-session:${pointer.sessionId}`);
   if (!session || session.status === 'SUBMITTED' || session.fingerprint !== fingerprint || String(session.serviceDeskId) !== serviceDeskId) return null;
-  return session;
+  return { ...session, actionableRowNumbers: await loadRowPlan(session) };
 });
 
 secureDefine('startImportSession', async ({ payload }) => {
@@ -311,12 +355,13 @@ secureDefine('startImportSession', async ({ payload }) => {
   }
 
   const createdAt = new Date().toISOString();
+  const rowPlanChunks = await saveRowPlan(id, actionableRowNumbers);
   const session = {
     id,
     fingerprint,
     serviceDeskId,
     fileName,
-    actionableRowNumbers,
+    rowPlanChunks,
     totalRows,
     totalBatches,
     skipped,
@@ -331,7 +376,7 @@ secureDefine('startImportSession', async ({ payload }) => {
   await kvs.set(key, session);
   await kvs.set(`import-recovery:${serviceDeskId}:${fingerprint}`, { sessionId: id, updatedAt: createdAt });
   return session;
-});
+}, { write: true });
 
 secureDefine('validateImport', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
@@ -441,6 +486,6 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   }
 
   return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
-});
+}, { write: true });
 
 export const handler = resolver.getDefinitions();

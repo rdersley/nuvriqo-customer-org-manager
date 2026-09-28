@@ -1,9 +1,10 @@
 // A fake Jira site: `site.organizations` backs the JSM organisation endpoints; every request is logged.
-export const site = { organizations: [], requests: [], isAdmin: true };
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true };
 
 export function resetSite(count = 0) {
   site.organizations = Array.from({ length: count }, (_, i) => ({ id: String(i + 1), name: `Org ${i + 1}` }));
   site.requests = [];
+  site.bulkRequests = [];
   site.isAdmin = true;
 }
 
@@ -33,6 +34,11 @@ async function requestJira(path, options = {}) {
     const limit = Number(query.get('limit'));
     const values = site.organizations.slice(start, start + limit);
     return json({ start, limit, size: values.length, values, isLastPage: start + limit >= site.organizations.length });
+  }
+  if (path === '/jsm/csm/api/v1/customer/profile/bulk' && method === 'POST') {
+    const { customerProfiles } = JSON.parse(options.body);
+    site.bulkRequests.push({ idempotencyKey: options.headers?.['Idempotency-Key'], customerProfiles });
+    return json({ id: `task-${site.bulkRequests.length}`, statusUrl: `/tasks/task-${site.bulkRequests.length}` }, 202);
   }
   throw new Error(`Unexpected request ${method} ${path}`);
 }
