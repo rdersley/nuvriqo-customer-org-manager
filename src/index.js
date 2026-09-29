@@ -100,12 +100,6 @@ secureDefine('getCustomerIndexBatch', async ({ payload }) => {
   return { customers, nextStart: start, complete, pagesFetched };
 });
 
-secureDefine('getOrganizations', async ({ payload }) => {
-  const start = Number(payload?.start || 0);
-  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
-  return jsonResponse(res);
-});
-
 secureDefine('createOrganization', async ({ payload }) => {
   const name = String(payload?.name || '').trim();
   if (!name) throw new Error('Organisation name is required');
@@ -134,26 +128,21 @@ function uniqueOrganisationNames(names) {
   return [...byKey.values()];
 }
 
-// Scans Jira organisations from `start` for the wanted names. Stops at Jira's final page, once every
-// name is found, or when the page/time budget runs out; callers resume from `nextStart` until `complete`.
-secureDefine('getImportOrganizations', async ({ payload }) => {
-  const wanted = new Set(uniqueOrganisationNames(payload?.names).map(organisationKey));
-  let start = Math.max(0, Number(payload?.start || 0));
-  const maxPages = Math.min(ORG_LOOKUP_MAX_PAGES, Math.max(1, Number(payload?.pages || ORG_LOOKUP_MAX_PAGES)));
+// Pages through Jira organisations from `start`, passing each page to `onPage` (return true to stop early).
+// Stops at Jira's final page or when the page/time budget runs out; callers resume from `nextStart` until `complete`.
+async function scanOrganizations(startAt, pages, onPage) {
+  let start = Math.max(0, Number(startAt || 0));
+  const maxPages = Math.min(ORG_LOOKUP_MAX_PAGES, Math.max(1, Number(pages || ORG_LOOKUP_MAX_PAGES)));
   const deadline = Date.now() + ORG_LOOKUP_BUDGET_MS;
-  const organizations = [];
-  let complete = wanted.size === 0;
+  let complete = false;
   let pagesFetched = 0;
 
-  while (!complete && pagesFetched < maxPages && Date.now() < deadline) {
+  while (pagesFetched < maxPages && Date.now() < deadline) {
     const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
     const body = await jsonResponse(res);
     const values = body?.values || [];
     pagesFetched += 1;
-    for (const org of values) {
-      const key = organisationKey(org.name);
-      if (wanted.delete(key)) organizations.push({ id: org.id, name: org.name });
-    }
+    const stop = onPage(values);
 
     if (body?.isLastPage || values.length === 0) {
       complete = true;
@@ -165,10 +154,32 @@ secureDefine('getImportOrganizations', async ({ payload }) => {
       throw new Error('Jira organisation pagination did not advance safely.');
     }
     start = nextStart;
-    if (wanted.size === 0) break;
+    if (stop) break;
   }
 
-  return { organizations, nextStart: start, complete, allFound: wanted.size === 0, pagesFetched };
+  return { nextStart: start, complete, pagesFetched };
+}
+
+secureDefine('getOrganizationIndexBatch', async ({ payload }) => {
+  const organizations = [];
+  const scan = await scanOrganizations(payload?.start, payload?.pages, (values) => {
+    organizations.push(...values.map((org) => ({ id: org.id, name: org.name })));
+  });
+  return { organizations, ...scan };
+});
+
+// Looks for the wanted names, stopping early once every one is found.
+secureDefine('getImportOrganizations', async ({ payload }) => {
+  const wanted = new Set(uniqueOrganisationNames(payload?.names).map(organisationKey));
+  if (!wanted.size) return { organizations: [], nextStart: Number(payload?.start || 0), complete: true, allFound: true, pagesFetched: 0 };
+  const organizations = [];
+  const scan = await scanOrganizations(payload?.start, payload?.pages, (values) => {
+    for (const org of values) {
+      if (wanted.delete(organisationKey(org.name))) organizations.push({ id: org.id, name: org.name });
+    }
+    return wanted.size === 0;
+  });
+  return { organizations, ...scan, allFound: wanted.size === 0 };
 });
 
 // Only call with names that a complete getImportOrganizations scan reported as missing.
