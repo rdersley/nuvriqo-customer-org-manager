@@ -7,3 +7,4 @@ static/dist/
 *.log
 .DS_Store
 Thumbs.db
+qa/marketing/dist-demo/

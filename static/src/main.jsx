@@ -586,7 +586,6 @@ function App() {
   const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', RUNNING: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
   const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
-  // Plain numbers (no separators): the acceptance tests match this label exactly.
   const impact = useMemo(() => importImpact(preview), [preview]);
   const safeguard = useMemo(() => importSafeguard(impact), [impact]);
   const deskName = serviceDesks.find((d) => String(d.id) === String(desk))?.projectName || 'the selected service project';
@@ -595,7 +594,7 @@ function App() {
     setTypedConfirmation('');
     setConfirmingImport(true);
   }
-  const importButtonLabel = `Import ${changeCount} customer change${changeCount === 1 ? '' : 's'}${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} error${previewSummary.ERROR === 1 ? '' : 's'})` : ''}`;
+  const importButtonLabel = `Import ${changeCount.toLocaleString()} customer change${changeCount === 1 ? '' : 's'}${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR.toLocaleString()} error${previewSummary.ERROR === 1 ? '' : 's'})` : ''}`;
   const deskPicker = (tab === 'Customers' || tab === 'Import') && serviceDesks.length > 0
     ? <select className="nq-select" aria-label="Service project" value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>
     : null;
@@ -654,16 +653,21 @@ function App() {
                 </Field>;
               })}
             </div>
-            <div className="nq-spread">
-              <div className="nq-inline">
-                {savedMappings.length > 0 && <select className="nq-select" aria-label="Use a saved mapping" value="" onChange={(e) => { const m = savedMappings.find((x) => x.id === e.target.value); if (m) { setMapping(fromSaved(m)); setMappingSource(`Using the saved mapping "${m.name}".`); setMappingName(m.name); } }}>
+            <div className="nq-grid nq-grid--3">
+              <div>
+                {savedMappings.length > 0 ? <select className="nq-select" aria-label="Use a saved mapping" value="" onChange={(e) => { const m = savedMappings.find((x) => x.id === e.target.value); if (m) { setMapping(fromSaved(m)); setMappingSource(`Using the saved mapping "${m.name}".`); setMappingName(m.name); } }}>
                   <option value="">Use a saved mapping…</option>
                   {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={missingMappingFields(fromSaved(m), csvTable.headers).length > 0}>{m.name}{missingMappingFields(fromSaved(m), csvTable.headers).length ? ' (columns not in this file)' : ''}</option>)}
-                </select>}
-                <input className="nq-input" aria-label="Mapping name" placeholder="Name this mapping" value={mappingName} onChange={(e) => setMappingName(e.target.value)}/>
+                </select> : <p className="nq-help">No saved mappings yet.</p>}
+              </div>
+              <input className="nq-input" aria-label="Mapping name" placeholder="Name this mapping" value={mappingName} onChange={(e) => setMappingName(e.target.value)}/>
+              <div className="nq-inline">
                 <Button disabled={readOnly || !mappingName.trim() || missingMappingFields(mapping, csvTable.headers).length > 0} onClick={saveMapping}>Save mapping</Button>
                 {savedMappings.some((m) => m.name === mappingName) && <Button appearance="subtle" onClick={() => deleteMapping(savedMappings.find((m) => m.name === mappingName).id)}>Delete saved mapping</Button>}
               </div>
+            </div>
+            <div className="nq-spread">
+              <p className="nq-help">Saved mappings are used automatically for files with the same columns.</p>
               <Button appearance="primary" disabled={previewing || missingMappingFields(mapping, csvTable.headers).length > 0 || sameMapping(mapping, appliedMapping)} onClick={previewWithCurrentMapping}>{appliedMapping ? 'Preview again with these columns' : 'Preview with these columns'}</Button>
             </div>
           </div>
@@ -716,7 +720,7 @@ function App() {
             {impact.newOrganisations.length > 0 && <li>{plural(impact.newOrganisations.length, 'organisation')} created: {impact.newOrganisations.slice(0, 10).join(', ')}{impact.newOrganisations.length > 10 ? `, and ${(impact.newOrganisations.length - 10).toLocaleString()} more` : ''}</li>}
           </ul>
           <p>Jira has no undo for this. Check the preview above first.</p>
-          {safeguard.level === 'typed' && <Field label={`Type ${impact.changes} to confirm`} htmlFor="import-confirm-count"><input id="import-confirm-count" className="nq-input" inputMode="numeric" autoComplete="off" value={typedConfirmation} onChange={(e) => setTypedConfirmation(e.target.value)}/></Field>}
+          {safeguard.level === 'typed' && <Field label={`Type ${impact.changes.toLocaleString()} to confirm`} htmlFor="import-confirm-count"><input id="import-confirm-count" className="nq-input" inputMode="numeric" autoComplete="off" value={typedConfirmation} onChange={(e) => setTypedConfirmation(e.target.value)}/></Field>}
           <div className="nq-inline">
             <Button appearance="primary" disabled={safeguard.level === 'typed' && !typedConfirmationMatches(typedConfirmation, impact.changes)} onClick={() => { setConfirmingImport(false); runImport(); }}>Yes, import {plural(impact.changes, 'change')}</Button>
             <Button onClick={() => setConfirmingImport(false)}>Cancel</Button>
