@@ -1,6 +1,6 @@
 # Security — Nuvriqo Customer & Organisation Manager
 
-_Last updated: 29 September 2026 (app version 0.4.0)._
+_Last updated: 29 September 2026 (app version 0.5.0)._
 
 ## Architecture
 
@@ -16,13 +16,14 @@ Forge-native. No Forge Remote, no external fetch, no vendor servers. Compute and
 
 ## Licensing
 
-Production fails closed. Without an active licence, reads and previews work, and every write resolver (`createOrganization`, `createImportOrganizations`, `saveImportMapping`, `deleteImportMapping`, `startImportSession`, `bulkUpsertCustomers`, `saveSyncConfig`, `saveSyncHealth`, `applySyncCorrections`) refuses the call. The sync trigger doesn't run on unlicensed sites. Covered by unit tests.
+Production fails closed. Without an active licence, reads and previews work, and every write resolver (`createOrganization`, `createImportOrganizations`, `saveImportMapping`, `deleteImportMapping`, `startImportSession`, `bulkUpsertCustomers`, `finaliseImportBatch`, `saveSyncConfig`, `saveSyncHealth`, `applySyncCorrections`) refuses the call. The sync trigger doesn't run on unlicensed sites. Covered by unit tests.
 
 ## Safe import behaviour
 
 - Organisations are created only after a scan reaches Jira's final page and proves the name is missing. If pagination stalls, nothing is created.
 - Selecting a CSV never changes Jira. Changes happen only when an administrator clicks Import or Resume.
 - Each 100-row batch carries an idempotency key, so a retried batch is not applied twice by Jira.
+- A batch only counts as done once its customers have been added to the service project and their organisations. Every row's outcome is reported (done, not found, failed with Jira's reason), and a resumed import redoes any batch that didn't finish.
 - Resolver input is validated: row counts, batch counts, SHA-256 fingerprints, at most 100 rows per bulk request, at most 50,000 rows per import plan, and at most 20 organisations created per call.
 
 ## Scopes and why each is needed
@@ -31,9 +32,10 @@ Production fails closed. Without an active licence, reads and previews work, and
 |---|---|
 | `storage:app` | Import sessions, row plans, bulk task records and saved mappings in Forge KVS |
 | `read:jira-work` | `GET /rest/api/3/mypermissions` (the admin check on every call); reading the field list, ticket fields, JQL search and autocomplete for sync; receiving issue created/updated events |
+| `read:jira-user` | Import: finding each imported customer's account id by email (`GET /rest/api/3/user/search`), so they can be added to the service project and organisations |
 | `write:jira-work` | Sync: setting the Organizations field on a ticket (`PUT /rest/api/3/issue/{id}`) |
 | `read:servicedesk-request` | `GET /rest/servicedeskapi/servicedesk`, listing service projects |
-| `manage:servicedesk-customer` | Listing a service project's customers, listing organisations, and creating organisations (`/rest/servicedeskapi/servicedesk/{id}/customer`, `/rest/servicedeskapi/organization`) |
+| `manage:servicedesk-customer` | Listing a service project's customers, listing organisations, creating organisations, and adding imported customers to the service project and to organisations (`/rest/servicedeskapi/servicedesk/{id}/customer`, `/rest/servicedeskapi/organization`, `/rest/servicedeskapi/organization/{id}/user`) |
 | `write:customer:jira-service-management` | Creating and updating customers through the JSM customer bulk API |
 | `write:customer.profile:jira-service-management` | Writing customer profiles (display name, organisation membership) in the same bulk API call |
 | `read:task:jira-service-management` | Reading bulk task status (`/jsm/csm/api/v1/tasks/{id}`) for Import History |

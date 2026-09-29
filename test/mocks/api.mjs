@@ -1,7 +1,7 @@
 // A fake Jira site. `site.organizations` backs the JSM organisation endpoints; `site.issues` and
 // `site.fields` back the issue, field and JQL search endpoints used by Client → Organisation sync.
 // Every request is logged with who made it (`user` for asUser, `app` for asApp).
-export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map() };
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map(), accounts: new Map(), deskCustomers: new Map(), orgMembers: new Map(), hideEmails: false, failMembership: new Set() };
 
 export const CLIENT_FIELD = 'customfield_10050';
 export const ORG_FIELD = 'customfield_10002';
@@ -11,6 +11,12 @@ export function resetSite(count = 0) {
   site.organizations = Array.from({ length: count }, (_, i) => ({ id: String(i + 1), name: `Org ${i + 1}` }));
   site.requests = [];
   site.bulkRequests = [];
+  // Customer accounts by email (created by the bulk API), service project customers, and organisation members.
+  site.accounts = new Map();
+  site.deskCustomers = new Map();
+  site.orgMembers = new Map();
+  site.hideEmails = false; // Jira hides emailAddress for some accounts
+  site.failMembership = new Set(); // e.g. 'org:30' makes adding members to org 30 fail
   site.isAdmin = true;
   site.issues = new Map();
   site.failIssueIds = new Set();
@@ -89,6 +95,27 @@ async function requestJira(as, path, options = {}) {
       return { ok: true, status: 204, text: async () => '' };
     }
   }
+  if (path.startsWith('/rest/api/3/user/search?')) {
+    const q = decodeURIComponent(new URLSearchParams(path.split('?')[1]).get('query') || '').toLowerCase();
+    const matches = [...site.accounts.values()].filter((a) => a.emailAddress.toLowerCase().includes(q) || a.displayName.toLowerCase().includes(q));
+    return json(matches.map((a) => (site.hideEmails ? { accountId: a.accountId, displayName: a.displayName, accountType: a.accountType } : { ...a })));
+  }
+  const addToDesk = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/]+)\/customer$/);
+  if (addToDesk && method === 'POST') {
+    if (site.failMembership.has(`desk:${addToDesk[1]}`)) return json({ errorMessage: 'You do not have permission to add customers.' }, 403);
+    const set = site.deskCustomers.get(addToDesk[1]) || new Set();
+    JSON.parse(options.body).accountIds.forEach((id) => set.add(id));
+    site.deskCustomers.set(addToDesk[1], set);
+    return { ok: true, status: 204, text: async () => '' };
+  }
+  const addToOrg = path.match(/^\/rest\/servicedeskapi\/organization\/([^/]+)\/user$/);
+  if (addToOrg && method === 'POST') {
+    if (site.failMembership.has(`org:${addToOrg[1]}`)) return json({ errorMessage: 'Organization does not exist.' }, 404);
+    const set = site.orgMembers.get(addToOrg[1]) || new Set();
+    JSON.parse(options.body).accountIds.forEach((id) => set.add(id));
+    site.orgMembers.set(addToOrg[1], set);
+    return { ok: true, status: 204, text: async () => '' };
+  }
   if (path.startsWith('/rest/servicedeskapi/servicedesk?')) return json({ values: site.serviceDesks, isLastPage: true });
   const deskOrgs = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/]+)\/organization\?/);
   if (deskOrgs) {
@@ -112,9 +139,17 @@ async function requestJira(as, path, options = {}) {
     const values = site.organizations.slice(start, start + limit);
     return json({ start, limit, size: values.length, values, isLastPage: start + limit >= site.organizations.length });
   }
+  // Like the live site: bulk tasks end FAILED with no failures even though the accounts were written.
+  if (path.startsWith('/jsm/csm/api/v1/tasks/')) return json({ id: path.split('/').pop(), status: site.taskStatus || 'FAILED', failures: [] });
   if (path === '/jsm/csm/api/v1/customer/profile/bulk' && method === 'POST') {
     const { customerProfiles } = JSON.parse(options.body);
     site.bulkRequests.push({ idempotencyKey: options.headers?.['Idempotency-Key'], customerProfiles });
+    for (const { payload } of customerProfiles) {
+      const email = payload.email.toLowerCase();
+      if (email.startsWith('reject-')) continue; // simulates a row Jira refuses
+      const existing = site.accounts.get(email);
+      site.accounts.set(email, { accountId: existing?.accountId || `qm:${site.accounts.size + 1}`, displayName: payload.displayName, emailAddress: payload.email, accountType: 'customer' });
+    }
     return json({ id: `task-${site.bulkRequests.length}`, statusUrl: `/tasks/task-${site.bulkRequests.length}` }, 202);
   }
   throw new Error(`Unexpected request ${method} ${path}`);

@@ -6,6 +6,7 @@ import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Field, Footer } from '@nuvriqo/ui/react';
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
+import { submitAndFinaliseBatch, problemRowsCsv } from './importBatch.js';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
@@ -291,12 +292,14 @@ function App() {
     for (let i = 0; i < recoveryRows.length; i += 100) chunks.push(recoveryRows.slice(i, i + 100));
     if (chunks.length !== Number(session.totalBatches)) throw new Error('Saved recovery batch count does not match this CSV. Resume has been blocked.');
 
-    const completed = new Set((session.batches || []).map((b) => Number(b.batchNumber)));
+    // A batch is done once it has been finalised (added to the project and organisations). Batches saved
+    // before finalising existed have no flag and count as done.
+    const completed = new Set((session.batches || []).filter((b) => b.finalised !== false).map((b) => Number(b.batchNumber)));
     let nextBatchIndex = 0;
     while (nextBatchIndex < chunks.length && completed.has(nextBatchIndex + 1)) nextBatchIndex += 1;
     if (nextBatchIndex >= chunks.length) return;
-    const tasks = (session.batches || []).filter((b) => Number(b.batchNumber) <= nextBatchIndex).map((b) => ({ ...b, submittedRows: Number(b.count || 0) }));
-    const plan = { sessionId: session.id, totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, recovered: true, organisationsPending: true };
+    const tasks = (session.batches || []).filter((b) => Number(b.batchNumber) <= nextBatchIndex).map((b) => ({ ...b, submittedRows: Number(b.count || 0), problems: [] }));
+    const plan = { sessionId: session.id, serviceDeskId: String(session.serviceDeskId), totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, recovered: true, organisationsPending: true };
     setResumePlan(plan);
     setImportProgress({
       state: 'recovered',
@@ -351,7 +354,6 @@ function App() {
   async function submitBatchWithRetry(plan, batchIndex, existingTasks) {
     const chunk = plan.chunks[batchIndex];
     const batchNumber = batchIndex + 1;
-    const idempotencyKey = `${plan.sessionId}-batch-${batchNumber}`;
     let lastError;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       setImportProgress({
@@ -365,15 +367,8 @@ function App() {
         attempt
       });
       try {
-        return await invoke('bulkUpsertCustomers', {
-          rows: chunk,
-          importSessionId: plan.sessionId,
-          batchNumber,
-          totalBatches: plan.chunks.length,
-          idempotencyKey,
-          rowStart: chunk[0]?.rowNumber || null,
-          rowEnd: chunk[chunk.length - 1]?.rowNumber || null
-        });
+        // Re-running a batch is safe: the bulk call reuses its idempotency key and membership adds are idempotent.
+        return await submitAndFinaliseBatch(invoke, plan, batchIndex);
       } catch (e) {
         lastError = e;
         if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
@@ -400,7 +395,7 @@ function App() {
     const tasks = [...initialTasks];
     for (let i = startBatchIndex; i < plan.chunks.length; i += 1) {
       const task = await submitBatchWithRetry(plan, i, tasks);
-      tasks.push({ ...task, submittedRows: plan.chunks[i].length });
+      tasks.push(task);
       const completedRows = tasks.reduce((sum, item) => sum + Number(item.submittedRows || 0), 0);
       setImportProgress({
         state: i === plan.chunks.length - 1 ? 'complete' : 'running',
@@ -415,6 +410,24 @@ function App() {
     }
     setResumePlan(null);
     return tasks;
+  }
+
+  // Rows that finished (in the project and their organisations) and the ones that didn't. Batches resumed
+  // from an earlier run count as finished; their per-row detail isn't kept.
+  function batchOutcome(tasks) {
+    const problems = tasks.flatMap((t) => t.problems || []);
+    const linked = tasks.reduce((n, t) => n + (t.linked ?? Math.max(0, Number(t.submittedRows || 0) - (t.problems || []).length)), 0);
+    return { linked, problems };
+  }
+
+  function downloadProblemRows() {
+    const byNumber = new Map(rows.map((r, i) => [i + 2, r]));
+    const blob = new Blob([problemRowsCsv(importStatus.problems, byNumber)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(csvInfo?.fileName || 'import').replace(/\.csv$/i, '')}-rows-to-fix.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   async function runImport() {
@@ -433,7 +446,7 @@ function App() {
       const chunks = [];
       for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
       const sessionId = makeSessionId();
-      const plan = { sessionId, totalRows: mapped.length, chunks };
+      const plan = { sessionId, serviceDeskId, totalRows: mapped.length, chunks };
       await invoke('startImportSession', {
         id: sessionId,
         fingerprint: fileFingerprint,
@@ -449,6 +462,7 @@ function App() {
       setImportStatus({
         submitted: mapped.length,
         tasks,
+        ...batchOutcome(tasks),
         createdOrganizations: created.length,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
@@ -478,6 +492,7 @@ function App() {
       setImportStatus({
         submitted: plan.totalRows,
         tasks,
+        ...batchOutcome(tasks),
         createdOrganizations,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
@@ -581,7 +596,7 @@ function App() {
           <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table></div>
         </Card>}
 
-        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches submitted' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
+        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
           {importProgress.state === 'preparing' && <Loading text={`Preparing organisations and ${plural(importProgress.totalRows, 'customer change')}…`}/>}
           {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
           {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
@@ -594,13 +609,21 @@ function App() {
           {resumePlan && <Button appearance="primary" disabled={readOnly || loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</Button>}
         </div>}
 
-        {importStatus && <Notice kind="success" title={importStatus.resumed ? 'Import resumed' : 'Import submitted'}>Submitted {plural(importStatus.submitted, 'customer change')} in {plural(importStatus.tasks.length, 'bulk task')}. Skipped {plural(importStatus.skipped, 'unchanged row')}. Excluded {plural(importStatus.excludedErrors, 'error row')}. Created {plural(importStatus.createdOrganizations, 'missing organisation')}. Import session: {importStatus.sessionId}.</Notice>}
+        {importStatus && <Notice kind={importStatus.problems.length ? 'warning' : 'success'} title={importStatus.problems.length ? `Import finished: ${plural(importStatus.problems.length, 'row')} to fix` : (importStatus.resumed ? 'Import resumed and complete' : 'Import complete')}>
+          <p>{plural(importStatus.linked, 'customer')} created or updated and added to {serviceDesks.find((d) => String(d.id) === String(desk))?.projectName || 'the service project'} and their organisations. Skipped {plural(importStatus.skipped, 'unchanged row')}. Excluded {plural(importStatus.excludedErrors, 'error row')}. Created {plural(importStatus.createdOrganizations, 'missing organisation')}.</p>
+          {importStatus.problems.length > 0 && <>
+            <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Email</th><th>Problem</th></tr></thead><tbody>{importStatus.problems.slice(0, 50).map((p) => <tr key={`${p.rowNumber}-${p.email}`}><td>{p.rowNumber}</td><td>{p.email}</td><td>{p.error}</td></tr>)}</tbody></table></div>
+            {importStatus.problems.length > 50 && <p className="nq-help">Showing the first 50 of {importStatus.problems.length.toLocaleString()}.</p>}
+            <div className="nq-inline"><Button onClick={downloadProblemRows}>Download rows to fix (CSV)</Button></div>
+          </>}
+          <p className="nq-help">Import session: {importStatus.sessionId}</p>
+        </Notice>}
       </>}
 
       {tab === 'Import History' && <Card title="Import History" description="Import sessions and the Jira bulk tasks they submitted." actions={<Button appearance="subtle" onClick={loadHistory}>Refresh status</Button>}>
         <div className="nq-stack">
           <h3 className="nq-card__title">Import sessions</h3>
-          {importSessions.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Started</th><th>File</th><th>Progress</th><th>Status</th><th>Session</th></tr></thead><tbody>{importSessions.map((s) => <tr key={s.id}><td>{new Date(s.createdAt).toLocaleString()}</td><td>{s.fileName || '—'}</td><td>{Number(s.submittedRows || 0).toLocaleString()} / {Number(s.totalRows || 0).toLocaleString()} rows · {Number(s.completedBatches || 0)} / {Number(s.totalBatches || 0)} batches</td><td><Lozenge kind={statusKind(s.status)}>{s.status || 'Unknown'}</Lozenge></td><td className="nq-muted">{s.id}</td></tr>)}</tbody></table></div>
+          {importSessions.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Started</th><th>File</th><th>Progress</th><th>Status</th><th>Session</th></tr></thead><tbody>{importSessions.map((s) => <tr key={s.id}><td>{new Date(s.createdAt).toLocaleString()}</td><td>{s.fileName || '—'}</td><td>{Number(s.submittedRows || 0).toLocaleString()} / {Number(s.totalRows || 0).toLocaleString()} rows · {Number(s.completedBatches || 0)} / {Number(s.totalBatches || 0)} batches{s.linkedRows != null ? ` · ${Number(s.linkedRows).toLocaleString()} added${s.problemRows ? `, ${Number(s.problemRows).toLocaleString()} to fix` : ''}` : ''}</td><td><Lozenge kind={statusKind(s.status)}>{s.status || 'Unknown'}</Lozenge></td><td className="nq-muted">{s.id}</td></tr>)}</tbody></table></div>
             : <EmptyState title="No import sessions yet" compact>Sessions appear here once you run an import.</EmptyState>}
           <h3 className="nq-card__title">Bulk task history</h3>
           {history.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td><Lozenge kind={statusKind(h.task?.status)}>{h.task?.status || 'Unknown'}</Lozenge></td><td>{h.task?.failures?.length || 0}</td><td className="nq-muted">{h.taskId}</td></tr>)}</tbody></table></div>

@@ -47,7 +47,9 @@ A note says when an organisation will be created. For large files, Import stays 
 
 ### 3. Import
 
-Click **Import N customer changes**. Changes are sent to Jira in batches of 100. Each batch is retried up to three times, and a retried batch is never applied twice. Missing organisations are created first. The app checks every organisation on the site before creating one, so existing organisations are never duplicated.
+Click **Import N customer changes**. Missing organisations are created first. The app checks every organisation on the site before creating one, so existing organisations are never duplicated. Customers are then created or updated in batches of 100 and added to the selected service project and their organisations. Each batch is retried up to three times, and a retried batch is never applied twice.
+
+When the import finishes, the app shows how many customers were added. It also lists any row that couldn't be finished, with Jira's reason. **Download rows to fix (CSV)** gives you those rows in the import format, ready to correct and import again.
 
 ### Resuming an interrupted import
 

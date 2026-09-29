@@ -1,6 +1,6 @@
 # Data handling — Nuvriqo Customer & Organisation Manager
 
-_Last checked against the code: 29 September 2026 (app version 0.4.0)._
+_Last checked against the code: 29 September 2026 (app version 0.5.0)._
 
 This is the source of truth for the Privacy & Security questionnaire and the public security page. If the code changes what is read, written or stored, update this file in the same pull request.
 
@@ -25,6 +25,7 @@ This is the source of truth for the Privacy & Security questionnaire and the pub
 | A ticket's project, Client, Organizations and Request Type fields | `GET /rest/api/3/issue/{id}?fields=…` | Sync: deciding the correct organisations |
 | Tickets in the selected projects with a Client value (the same fields) | `POST /rest/api/3/search/jql` | Sync health check |
 | Client value suggestions | `GET /rest/api/3/jql/autocompletedata/suggestions` | Filling in the mapping table |
+| An imported customer's account id, found by email | `GET /rest/api/3/user/search?query=<email>` | Finishing an import batch: adding the customer to the service project and organisations |
 
 Customer names and emails are shown in the browser and used in memory for the preview. **They are never written to app storage.**
 
@@ -33,7 +34,9 @@ Customer names and emails are shown in the browser and used in memory for the pr
 | Change | API | When |
 |---|---|---|
 | Create an organisation | `POST /rest/servicedeskapi/organization` | Only for organisation names that a complete scan of the site proved missing, when an administrator clicks Import or Resume |
-| Create or update customer profiles, and add them to organisations | `POST /jsm/csm/api/v1/customer/profile/bulk` | When an administrator clicks Import or Resume; at most 100 rows per request, each with an idempotency key |
+| Create or update customer accounts (email, display name) | `POST /jsm/csm/api/v1/customer/profile/bulk` | When an administrator clicks Import or Resume; at most 100 rows per request, each with an idempotency key |
+| Add imported customers to the selected service project | `POST /rest/servicedeskapi/servicedesk/{id}/customer` | After each batch's bulk task ends; up to 50 accounts per call |
+| Add imported customers to their organisations | `POST /rest/servicedeskapi/organization/{id}/user` | After each batch's bulk task ends; up to 50 accounts per call |
 | Set a ticket's Organizations field | `PUT /rest/api/3/issue/{id}` (Organizations field only) | Sync: when sync is on and a ticket in a selected project is created or its Client changes (as the app); or when an administrator confirms **Correct N tickets** (as the administrator) |
 
 ## CSV files
@@ -49,7 +52,7 @@ Installation-scoped Forge KVS only. No customer names or email addresses are sto
 
 | Key | Contents | Retention |
 |---|---|---|
-| `import-session:<id>` | Import session: file name, file fingerprint, service project id, row counts, batch counts, status, per-batch Jira task ids and idempotency keys, timestamps | 180 days after last update (KVS TTL) |
+| `import-session:<id>` | Import session: file name, file fingerprint, service project id, row counts, batch counts, status, per-batch Jira task ids, idempotency keys, whether each batch finished and how many rows were added or need fixing, timestamps | 180 days after last update (KVS TTL) |
 | `import-session-rows:<id>:<n>` | The CSV row numbers the session will import (numbers only), in chunks of 5,000 | 180 days after last update |
 | `import-recovery:<serviceDeskId>:<fingerprint>` | Pointer to the session that can be resumed for a file | 180 days, or deleted when the session completes |
 | `import:<idempotencyKey>` | Bulk task record: Jira task id, batch number, row count, row range, timestamp | 180 days |
