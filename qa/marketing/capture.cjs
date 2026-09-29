@@ -1,10 +1,13 @@
 // Marketplace images (1840x900) from the demo build. Fictional data only. See qa/marketing/README.md.
+// With --crops, renders the three highlight views at 1160x660 and saves them halved as 580x330
+// (the Marketplace's cropped highlight size), so the layout reflows instead of being sliced.
 const path = require('path');
 const fs = require('fs');
 const { chromium } = require('playwright');
 
+const CROPS = process.argv.includes('--crops');
 const dist = path.join(__dirname, 'dist-demo');
-const out = process.argv[2] || path.join(__dirname, '..', '..', 'docs', 'marketing');
+const out = process.argv.slice(2).find((a) => !a.startsWith('--')) || path.join(__dirname, '..', '..', 'docs', 'marketing');
 fs.mkdirSync(out, { recursive: true });
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
@@ -34,7 +37,8 @@ const big = ['Email,Full Name,Organisation', ...Array.from({ length: 16413 }, (_
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1840, height: 900 } });
+  const page = await browser.newPage({ viewport: CROPS ? { width: 1160, height: 660 } : { width: 1840, height: 900 } });
+  const scaler = CROPS ? await browser.newPage() : null;
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -51,7 +55,27 @@ const big = ['Email,Full Name,Organisation', ...Array.from({ length: 16413 }, (_
     await locator.first().evaluate((e, o) => window.scrollTo(0, e.getBoundingClientRect().top + window.scrollY - o), offset);
     await page.waitForTimeout(150);
   };
-  const shot = async (name) => { await page.mouse.move(1835, 5); await page.waitForTimeout(100); await page.screenshot({ path: path.join(out, `${name}.png`) }); console.log('saved', name); };
+  const shot = async (name) => {
+    if (CROPS && !name.startsWith('highlight-')) return;
+    await page.mouse.move(CROPS ? 1155 : 1835, 5);
+    await page.waitForTimeout(100);
+    if (!CROPS) { await page.screenshot({ path: path.join(out, `${name}.png`) }); console.log('saved', name); return; }
+    const src = `data:image/png;base64,${(await page.screenshot()).toString('base64')}`;
+    const dataUrl = await scaler.evaluate(async (s) => {
+      const img = new Image();
+      img.src = s;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = 580;
+      canvas.height = 330;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, 580, 330);
+      return canvas.toDataURL('image/png');
+    }, src);
+    fs.writeFileSync(path.join(out, `${name}-580x330.png`), Buffer.from(dataUrl.split(',')[1], 'base64'));
+    console.log('saved', `${name}-580x330`);
+  };
   const upload = (name, text) => page.locator('#csv-file').setInputFiles({ name, mimeType: 'text/csv', buffer: Buffer.from(text) });
 
   // 1. Know before you import

@@ -51,9 +51,11 @@ Jira Service Management, JSM customers, organizations, organisation, bulk import
 
 | Field | Value |
 |---|---|
-| Documentation | Confluence page from `docs/public/documentation.md` (NS space) |
+| Documentation | https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/9240577 (from `docs/public/documentation.md`) |
+| Support page | https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/44924930 (from `docs/public/support.md`) |
 | Support / service desk | https://nuvriqo.atlassian.net/servicedesk/customer/portal/2 |
-| Security & privacy overview | Confluence page from `docs/public/security.md` (NS space) |
+| Security & privacy overview | https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/45056001 (from `docs/public/security.md`) |
+| Release notes | https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/9437185 |
 | Privacy policy | Nuvriqo privacy policy (shared): https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/1540097 |
 | EULA | Atlassian Marketplace standard (Bonterms), as for Follow-Up Manager and Portal+ |
 | Contact | support@nuvriqo.com |
@@ -76,8 +78,8 @@ The questionnaire ignores automated input, so an administrator types these in by
 
 ### Scope justification (paste into the scope justification field, 250–5000 characters)
 
-> Customer & Organisation Manager is a Jira admin page for bulk-managing Jira Service Management customers and organisations. Every call is made as the signed-in Jira administrator (asUser) after a server-side check of the Administer permission.
-> storage:app stores import session metadata (row counts, row numbers, Jira bulk task ids, timestamps) and saved CSV column mappings in Forge storage; no customer names or emails are stored.
+> Customer & Organisation Manager is a Jira admin page for bulk-managing Jira Service Management customers and organisations, with an optional Client → Organisation sync. Every call from the admin page is made as the signed-in Jira administrator (asUser) after a server-side check of the Administer permission. The sync issue trigger runs as the app, only on projects an administrator enabled, and only edits the Organizations field.
+> storage:app stores import session metadata (row counts, row numbers, Jira bulk task ids, timestamps), saved CSV column mappings, sync settings and a 90-day correction log (issue keys and organisation ids) in Forge storage; no customer names, emails or account ids are stored.
 > read:jira-work is used for GET /rest/api/3/mypermissions (the administrator check on every request), and for Client → Organisation sync: receiving issue created/updated events, reading the Jira field list, reading a ticket's Client and Organizations fields, JQL search for the sync health check, and JQL autocomplete for Client value suggestions.
 > read:jira-user is used only to find an imported customer's account id by email (GET /rest/api/3/user/search), so the import can add them to the chosen service project and their organisations.
 > write:jira-work is used only by Client → Organisation sync to set the Organizations field on a ticket (PUT /rest/api/3/issue/{id}), when an administrator has turned sync on for that project, or confirms a bulk correction.
@@ -85,6 +87,62 @@ The questionnaire ignores automated input, so an administrator types these in by
 > manage:servicedesk-customer lists a service project's customers, lists organisations, creates organisations that an import needs, and adds imported customers to the chosen service project and to their organisations (/rest/servicedeskapi/servicedesk/{id}/customer, /rest/servicedeskapi/organization, /rest/servicedeskapi/organization/{id}/user).
 > write:customer:jira-service-management and write:customer.profile:jira-service-management create and update customer accounts (email, display name) through the JSM customer bulk API (/jsm/csm/api/v1/customer/profile/bulk).
 > read:task:jira-service-management reads the status of those bulk tasks (/jsm/csm/api/v1/tasks/{id}) for the Import History view.
+
+### More Privacy & Security answers
+
+These are carried over from the August Confluence "Marketplace Submission Pack" and updated for version 0.5.0. Items marked **(confirm)** need a decision from Nuvriqo before publishing.
+
+| Question | Answer | Note |
+|---|---|---|
+| Processes End-User Data outside Atlassian products or the end user's browser? | No | Forge only. |
+| Logs End-User Data? | No | Resolvers don't log row content; Jira error messages on sync failures go to the app's own KVS log, not to external logs. |
+| Exposes remote REST APIs? | No | No web triggers, no Forge Remote. |
+| Shares End-User Data or logs with third parties / sub-processors? | No | |
+| Customer-managed egress | Not applicable | No egress in the manifest. |
+| Stores End-User Data after uninstall? | No | Forge removes the app's storage. |
+| Custom retention period? | Yes | Import records 180 days; sync correction log 90 days (KVS TTL). |
+| GDPR role | Processor **(confirm)** | Suggested text: "The app processes JSM customer names, email addresses, account identifiers and organisation information only on the customer's instructions to provide the requested administration functions. Processing stays within Atlassian Jira, JSM and Forge." |
+| CCPA business / service provider | Not applicable **(confirm)** | |
+| DPA available? | No | Change once a Nuvriqo DPA is published. |
+| Transfers EEA data outside the EEA? | No | No vendor-controlled egress. |
+| Security contact | support@nuvriqo.com | Until a dedicated security address exists. |
+| Security policy URL | https://nuvriqo.atlassian.net/wiki/spaces/NS/pages/45056001 | |
+| CAIQ Lite / certifications / bug bounty | No | Unless Nuvriqo obtains them. |
+| Accesses Atlassian PATs, passwords or shared secrets? | No | |
+
+### Forge app security questionnaire
+
+| # | Question | Answer |
+|---|---|---|
+| 1 / 1a | User interactions? Uses `asUser()` for user actions? | Yes / Yes. Every admin-page resolver uses `asUser()`. |
+| 2 | Forge Remote? | No |
+| 3 | Before `asApp()` actions that need user permissions, are permissions checked? | Yes. Only the Client → Organisation sync trigger uses `asApp()`. It isn't a user request: it applies a configuration that only a Jira administrator can save (checked server-side), only on the projects they selected, and only edits the Organizations field. |
+| 4 | Web triggers? | No |
+| 5 | Display conditions used instead of permission checks? | No display conditions; every resolver checks the Administer permission. |
+| 6 | Egress to external hosts? | No |
+| 7 | Least-privilege scopes? | Yes. 9 scopes, each justified above; 6 unused scopes were removed in 0.3.0. |
+| 8 | Logs sensitive information? | No |
+| 9 / 9a | Validates and sanitises input? | Yes. CSV rows are validated (email format, required name, duplicate emails); organisation names are trimmed and deduplicated; resolvers validate ids (`customfield_\d+`, numeric ids, SHA-256 fingerprints), cap batch sizes (100 rows per bulk request, 20 organisations per create call, 25 tickets per correction call, 50,000 rows per import plan) and build Jira paths with Forge's `route` template. Sync field ids come from the site, not the browser. |
+| 10 | Automated dependency review? | Yes. `npm audit` in the release gate, and lockfiles are committed. |
+| 11 / 12 | Collects Atlassian or third-party credentials? | No / No |
+| 13 | Secrets in URLs, source or repos? | No |
+| 14 / 14a | Vulnerability scans? | Yes. Software composition analysis (`npm audit`). |
+| 15–17 | Bug fix policy read; incident notification; security contact | Yes; Yes; support@nuvriqo.com via the Nuvriqo Atlassian account. |
+
+### Reviewer test instructions
+
+1. Install on a Jira Cloud site with Jira Service Management, as a Jira administrator.
+2. Open **Jira settings → Apps → Customer & Organisation Manager**.
+3. **Customers:** pick a service project; customers load and search works.
+4. **Organisations:** every organisation loads, with a count; search filters.
+5. **Import:** upload a small CSV (`Email,Full Name,Organisation`) with one invalid email and one new organisation. The preview marks rows Create / Update / Skip / Error and notes the organisation to be created. Click Import. The result says how many customers were added, and the new organisation exists with the customer in it.
+6. **Column mapping:** upload a CSV with other column names (for example `Contact,Mail,Company`). Choose the columns, preview, save the mapping, and upload again: the mapping is applied automatically.
+7. **Organisation sync:** create a single-select field "Client" on a service project, and an organisation added to that project. Map a Client value to the organisation, select the project, turn sync on and save. Create a ticket with that Client value: its Organizations field is set within seconds. **Check tickets** shows the counts, and Recent corrections lists the change.
+8. **Import History** shows the session and its bulk task.
+
+### Release notes (1.0 / app version 0.5.0)
+
+> First Marketplace release of Nuvriqo Customer & Organisation Manager for Jira Service Management: a Jira admin page to view and search customers and organisations; CSV import with column mapping and saved mappings; a Jira-aware Create / Update / Skip / Error preview; automatic creation of missing organisations after checking every organisation on the site; imports of 16,000+ rows in retry-safe batches that add customers to the service project and their organisations; resumable imports; confirmation for large imports; import history; and Client → Organisation sync that keeps the JSM Organizations field in step with a Client field, with a health check and bulk correction. Built on Atlassian Forge with no external services.
 
 ## Pricing
 
