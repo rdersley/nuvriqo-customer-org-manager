@@ -60,6 +60,10 @@ Click **Import N customer changes**. Missing organisations are created first. Th
 
 When the import finishes, the app shows how many customers were added. It also lists any row that couldn't be finished, with Jira's reason. **Download rows to fix (CSV)** gives you those rows in the import format, ready to correct and import again.
 
+### Large imports
+
+Before a large import runs, the app asks you to confirm. That means 500 or more changes, 100 or more existing customers being renamed, or 10 or more new organisations. The confirmation lists the new customers, the renames and the organisations that will be created. For 5,000 or more changes, you type the number of changes to confirm.
+
 ### Resuming an interrupted import
 
 If an import stops part-way (for example the browser closed), open the Import tab and choose **the same file** again. The app recognises it and offers **Resume saved import from batch N**. Choosing the file changes nothing; the import only continues when you click Resume.
