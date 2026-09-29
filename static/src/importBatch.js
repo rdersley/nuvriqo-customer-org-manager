@@ -66,3 +66,40 @@ export function problemRowsCsv(problems, rowsByNumber) {
   }
   return `${lines.join('\n')}\n`;
 }
+
+// Jira's user search only finds a newly created account a little while after the bulk task ends (minutes
+// on a live site). So rows reported "not-found" are re-checked at the end of the import: every `waitMs`,
+// up to `attempts` times, per batch so the session's counts stay right. Returns the problems that remain.
+export async function recheckNotFound(invoke, plan, problems, { attempts = 12, waitMs = 15000, sleep = defaultSleep, onProgress = () => {} } = {}) {
+  const batchOf = new Map();
+  plan.chunks.forEach((chunk, i) => chunk.forEach((row) => batchOf.set(row.rowNumber, { batchIndex: i, row })));
+  let remaining = problems.filter((p) => p.status === 'not-found' && batchOf.has(p.rowNumber));
+  const other = problems.filter((p) => !remaining.includes(p));
+  for (let attempt = 1; attempt <= attempts && remaining.length; attempt += 1) {
+    onProgress({ attempt, attempts, waiting: remaining.length });
+    await sleep(waitMs);
+    const byBatch = new Map();
+    for (const p of remaining) {
+      const { batchIndex } = batchOf.get(p.rowNumber);
+      if (!byBatch.has(batchIndex)) byBatch.set(batchIndex, []);
+      byBatch.get(batchIndex).push(batchOf.get(p.rowNumber).row);
+    }
+    const next = [];
+    for (const [batchIndex, rows] of byBatch) {
+      const r = await invoke('finaliseImportBatch', {
+        rows: rows.map((row) => ({ rowNumber: row.rowNumber, email: row.email, organizationIds: row.organizationIds || [] })),
+        serviceDeskId: plan.serviceDeskId,
+        importSessionId: plan.sessionId,
+        batchNumber: batchIndex + 1,
+        totalBatches: plan.chunks.length,
+        retry: true
+      });
+      for (const result of r.results || []) {
+        if (result.status === 'not-found') next.push(result);
+        else if (result.status !== 'done') other.push(result);
+      }
+    }
+    remaining = next;
+  }
+  return [...other, ...remaining].sort((a, b) => a.rowNumber - b.rowNumber);
+}

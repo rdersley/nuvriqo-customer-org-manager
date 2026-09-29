@@ -1,7 +1,7 @@
 // A fake Jira site. `site.organizations` backs the JSM organisation endpoints; `site.issues` and
 // `site.fields` back the issue, field and JQL search endpoints used by Client → Organisation sync.
 // Every request is logged with who made it (`user` for asUser, `app` for asApp).
-export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map(), accounts: new Map(), deskCustomers: new Map(), orgMembers: new Map(), hideEmails: false, failMembership: new Set() };
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map(), accounts: new Map(), deskCustomers: new Map(), orgMembers: new Map(), hideEmails: false, failMembership: new Set(), searchLag: 0 };
 
 export const CLIENT_FIELD = 'customfield_10050';
 export const ORG_FIELD = 'customfield_10002';
@@ -17,6 +17,7 @@ export function resetSite(count = 0) {
   site.orgMembers = new Map();
   site.hideEmails = false; // Jira hides emailAddress for some accounts
   site.failMembership = new Set(); // e.g. 'org:30' makes adding members to org 30 fail
+  site.searchLag = 0; // like the live site: a new account is only found by user search after this many searches
   site.isAdmin = true;
   site.issues = new Map();
   site.failIssueIds = new Set();
@@ -97,7 +98,11 @@ async function requestJira(as, path, options = {}) {
   }
   if (path.startsWith('/rest/api/3/user/search?')) {
     const q = decodeURIComponent(new URLSearchParams(path.split('?')[1]).get('query') || '').toLowerCase();
-    const matches = [...site.accounts.values()].filter((a) => a.emailAddress.toLowerCase().includes(q) || a.displayName.toLowerCase().includes(q));
+    const matches = [...site.accounts.values()].filter((a) => {
+      if (!(a.emailAddress.toLowerCase().includes(q) || a.displayName.toLowerCase().includes(q))) return false;
+      if (a.searchesUntilIndexed > 0) { a.searchesUntilIndexed -= 1; return false; }
+      return true;
+    }).map(({ searchesUntilIndexed, ...a }) => a);
     return json(matches.map((a) => (site.hideEmails ? { accountId: a.accountId, displayName: a.displayName, accountType: a.accountType } : { ...a })));
   }
   const addToDesk = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/]+)\/customer$/);
@@ -148,7 +153,7 @@ async function requestJira(as, path, options = {}) {
       const email = payload.email.toLowerCase();
       if (email.startsWith('reject-')) continue; // simulates a row Jira refuses
       const existing = site.accounts.get(email);
-      site.accounts.set(email, { accountId: existing?.accountId || `qm:${site.accounts.size + 1}`, displayName: payload.displayName, emailAddress: payload.email, accountType: 'customer' });
+      site.accounts.set(email, { accountId: existing?.accountId || `qm:${site.accounts.size + 1}`, displayName: payload.displayName, emailAddress: payload.email, accountType: 'customer', searchesUntilIndexed: existing ? 0 : site.searchLag });
     }
     return json({ id: `task-${site.bulkRequests.length}`, statusUrl: `/tasks/task-${site.bulkRequests.length}` }, 202);
   }

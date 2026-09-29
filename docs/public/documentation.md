@@ -98,6 +98,8 @@ Without an active licence the app is read-only: you can browse and preview, but 
 | "Required CSV column missing" | Check the header row is exactly `Email`, `Full Name` (or `Display Name`) and optionally `Organisation`. |
 | Rows marked Error with "Duplicate email in file" | Each email may appear once. Remove the duplicates and choose the file again. |
 | A batch failed after three attempts | Earlier batches are saved. Choose the same file again and click Resume. |
+| Imported customers don't show on the Customers tab | If the service project lets any customer raise requests, Jira doesn't keep a list of added customers, so they aren't listed there. They're still in their organisations and can use the portal. Projects restricted to added customers list them as usual. |
+| Rows marked "no customer account yet" | Jira takes a few minutes to make newly created customers searchable. The app re-checks for about 3 minutes after the last batch; click **Check again** later for any still waiting. |
 | Read-only notice | The site's licence isn't active. Start a trial or renew from **Manage apps**. |
 
 ## Support

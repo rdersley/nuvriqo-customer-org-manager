@@ -112,14 +112,15 @@ export async function finaliseRows(jira, { serviceDeskId, rows }) {
 
 // Records a batch's state on its import session and recomputes the session status. A batch counts as
 // complete only once it has been finalised; the session is SUBMITTED when every batch is complete.
-// Batches saved before finalising existed (no `finalised` field) count as complete.
+// Batches saved before finalising existed (no `finalised` field) count as complete. `patch` may be a
+// function of the batch's current record (used by retries to add to its counts).
 export async function updateSessionBatch({ importSessionId, batchNumber, totalBatches, patch, retention }) {
   const sessionKey = `import-session:${importSessionId}`;
   const previous = await kvs.get(sessionKey);
   if (!previous) throw new Error('Import recovery session was not found.');
   const prior = Array.isArray(previous.batches) ? previous.batches : [];
   const existing = prior.find((b) => Number(b.batchNumber) === batchNumber) || { batchNumber };
-  const batches = [...prior.filter((b) => Number(b.batchNumber) !== batchNumber), { ...existing, ...patch }]
+  const batches = [...prior.filter((b) => Number(b.batchNumber) !== batchNumber), { ...existing, ...(typeof patch === 'function' ? patch(existing) : patch) }]
     .sort((a, b) => Number(a.batchNumber) - Number(b.batchNumber));
   const total = Number(totalBatches || previous.totalBatches);
   const complete = batches.filter((b) => b.finalised !== false);
@@ -163,7 +164,10 @@ export function registerImportFinalise(secureDefine, { retention }) {
         importSessionId,
         batchNumber: Math.max(1, Number(payload?.batchNumber || 1)),
         totalBatches: payload?.totalBatches,
-        patch: { finalised: true, linked, problems: results.length - linked, finalisedAt: new Date().toISOString() },
+        // A retry only re-checks rows that weren't found the first time: it adds to the batch's counts.
+        patch: payload?.retry
+          ? (b) => ({ linked: Number(b.linked || 0) + linked, problems: Math.max(0, Number(b.problems || 0) - linked), finalised: true })
+          : { finalised: true, linked, problems: results.length - linked, finalisedAt: new Date().toISOString() },
         retention
       });
     }

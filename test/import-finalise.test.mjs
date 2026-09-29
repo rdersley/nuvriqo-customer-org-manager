@@ -136,3 +136,24 @@ test('problem rows download as a CSV that can be fixed and re-imported', () => {
   const csv = problemRowsCsv([{ rowNumber: 3, email: 'jo@x.test', status: 'failed', error: 'Not added to organisation 9: "gone"' }], byNumber);
   assert.equal(csv, 'Email,Full Name,Organisation,Row,Problem\njo@x.test,"Smith, Jo",Acme,3,"Not added to organisation 9: ""gone"""\n');
 });
+
+test('new accounts that Jira search has not indexed yet are found by the end-of-import re-check', async () => {
+  const { recheckNotFound } = await import('../static/src/importBatch.js');
+  site.searchLag = 2; // each new account is invisible to the first two searches
+  const rows = [row(2, 'lag1@x.test', ['10']), row(3, 'lag2@x.test'), row(4, 'reject-me@x.test')];
+  await call('startImportSession', { id: 'lag', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2, 3, 4], totalRows: 3, totalBatches: 1 });
+  const plan = { sessionId: 'lag', serviceDeskId: '1', chunks: [rows] };
+  const first = await submitAndFinaliseBatch(invoke, plan, 0, fastClock());
+  assert.equal(first.linked, 0);
+  assert.equal(first.problems.length, 3);
+  assert.equal(store.get('import-session:lag').problemRows, 3);
+
+  const progress = [];
+  const remaining = await recheckNotFound(invoke, plan, first.problems, { ...fastClock(), attempts: 5, onProgress: (p) => progress.push(p.waiting) });
+  assert.deepEqual(remaining.map((p) => [p.rowNumber, p.status]), [[4, 'not-found']], 'only the row Jira rejected is left');
+  assert.equal(site.orgMembers.get('10').size, 1);
+  assert.equal(site.deskCustomers.get('1').size, 2);
+  const session = store.get('import-session:lag');
+  assert.deepEqual([session.linkedRows, session.problemRows], [2, 1], 'retries add to the batch counts');
+  assert.ok(progress.length >= 2 && progress.at(-1) === 1);
+});

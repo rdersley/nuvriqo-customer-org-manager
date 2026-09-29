@@ -6,7 +6,7 @@ import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Field, Footer } from '@nuvriqo/ui/react';
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv } from './importBatch.js';
+import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
@@ -108,6 +108,8 @@ function App() {
   const [previewing, setPreviewing] = useState(false);
   const [comparisonProgress, setComparisonProgress] = useState(null);
   const [importStatus, setImportStatus] = useState(null);
+  const [lastPlan, setLastPlan] = useState(null);
+  const [rechecking, setRechecking] = useState(false);
   const [importProgress, setImportProgress] = useState(null);
   const [resumePlan, setResumePlan] = useState(null);
   const [history, setHistory] = useState([]);
@@ -420,6 +422,31 @@ function App() {
     return { linked, problems };
   }
 
+  // After the last batch: new accounts Jira hasn't indexed yet are re-checked for a few minutes.
+  async function finishOutcome(plan, tasks) {
+    let { linked, problems } = batchOutcome(tasks);
+    setLastPlan(plan);
+    if (problems.some((p) => p.status === 'not-found')) {
+      const before = problems.length;
+      problems = await recheckNotFound(invoke, plan, problems, {
+        onProgress: ({ attempt, attempts, waiting }) => setImportProgress((p) => ({ ...p, state: 'rechecking', attempt, attempts, waiting }))
+      });
+      linked += before - problems.length;
+      setImportProgress((p) => ({ ...p, state: 'complete' }));
+    }
+    return { linked, problems };
+  }
+
+  async function checkAgain() {
+    setRechecking(true);
+    try {
+      const before = importStatus.problems.length;
+      const problems = await recheckNotFound(invoke, lastPlan, importStatus.problems, { attempts: 1, waitMs: 0 });
+      setImportStatus((st) => ({ ...st, problems, linked: st.linked + (before - problems.length) }));
+    } catch (e) { setError(e.message); }
+    finally { setRechecking(false); }
+  }
+
   function downloadProblemRows() {
     const byNumber = new Map(rows.map((r, i) => [i + 2, r]));
     const blob = new Blob([problemRowsCsv(importStatus.problems, byNumber)], { type: 'text/csv' });
@@ -462,7 +489,7 @@ function App() {
       setImportStatus({
         submitted: mapped.length,
         tasks,
-        ...batchOutcome(tasks),
+        ...(await finishOutcome(plan, tasks)),
         createdOrganizations: created.length,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
@@ -492,7 +519,7 @@ function App() {
       setImportStatus({
         submitted: plan.totalRows,
         tasks,
-        ...batchOutcome(tasks),
+        ...(await finishOutcome(plan, tasks)),
         createdOrganizations,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
@@ -596,10 +623,11 @@ function App() {
           <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table></div>
         </Card>}
 
-        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
+        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
           {importProgress.state === 'preparing' && <Loading text={`Preparing organisations and ${plural(importProgress.totalRows, 'customer change')}…`}/>}
           {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
           {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
+          {importProgress.state === 'rechecking' && <Loading text={`Waiting for Jira to finish creating ${plural(importProgress.waiting, 'new customer')} before adding them to the project and organisations (check ${importProgress.attempt} of ${importProgress.attempts})…`}/>}
           {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
           {importProgress.state === 'failed' && <Notice kind="error">Batch {importProgress.currentBatch} failed after three attempts. Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</Notice>}
         </Card>}
@@ -614,7 +642,7 @@ function App() {
           {importStatus.problems.length > 0 && <>
             <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Email</th><th>Problem</th></tr></thead><tbody>{importStatus.problems.slice(0, 50).map((p) => <tr key={`${p.rowNumber}-${p.email}`}><td>{p.rowNumber}</td><td>{p.email}</td><td>{p.error}</td></tr>)}</tbody></table></div>
             {importStatus.problems.length > 50 && <p className="nq-help">Showing the first 50 of {importStatus.problems.length.toLocaleString()}.</p>}
-            <div className="nq-inline"><Button onClick={downloadProblemRows}>Download rows to fix (CSV)</Button></div>
+            <div className="nq-inline">{importStatus.problems.some((p) => p.status === 'not-found') && lastPlan && <Button disabled={rechecking} onClick={checkAgain}>{rechecking ? 'Checking…' : 'Check again'}</Button>}<Button onClick={downloadProblemRows}>Download rows to fix (CSV)</Button></div>
           </>}
           <p className="nq-help">Import session: {importStatus.sessionId}</p>
         </Notice>}
