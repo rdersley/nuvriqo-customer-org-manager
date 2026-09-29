@@ -33,13 +33,15 @@ Customer & Organisation Manager gives Jira administrators one place to manage JS
 
 Runs entirely on Atlassian Forge and uses only the signed-in administrator's own Jira permissions.
 
-## Highlights (3)
+## Highlights and screenshots
 
-1. **Know before you import.** Every CSV row is checked against Jira and marked Create, Update, Skip or Error. Nothing changes until you click Import. _(Screenshot: Import preview with counts and row actions.)_
-2. **Built for large sites.** Import 16,000+ customers in retry-safe batches. Organisation matching checks every organisation on the site, so none are duplicated. _(Screenshot: large-import comparison and progress.)_
-3. **Organisations that stay in sync.** Map your Client field to JSM organisations once. New tickets and Client changes update the Organizations field automatically, with no Automation rules or usage. _(Screenshot: Organisation sync tab with mappings and sync health.)_
+The images (1840×900) and the exact highlight titles, summaries and screenshot captions are in [`docs/marketing/`](marketing/README.md):
 
-(Alternate highlight: **Safe to stop and resume.** If an import is interrupted, select the same file and resume from the batch where it stopped.)
+1. **Know exactly what an import will change**: `highlight-1-know-before-you-import.png`
+2. **Built for 16,000+ customer imports**: `highlight-2-built-for-large-sites.png`
+3. **Organisations that stay in sync**: `highlight-3-organisations-in-sync.png`
+
+Plus six captioned screenshots: column mapping, import results, sync settings, import history, organisations, and the large-import confirmation.
 
 ## Keywords
 

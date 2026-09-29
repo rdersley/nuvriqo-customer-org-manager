@@ -90,7 +90,7 @@ test('16k valid CSV completes batched Jira comparison without API 412', async ({
   await expect(manager.getByRole('heading', { name: 'Jira comparison complete', exact: true })).toBeVisible({ timeout: 75000 });
   await expect(manager.locator('body')).toContainText('All valid CSV rows have now been checked against Jira');
   await expect(manager.locator('body')).not.toContainText(/Atlassian API error 412|Preview failed|Large import comparison failed/i);
-  await expect(manager.getByRole('button', { name: /Import 16413 customer changes/ })).toBeEnabled();
+  await expect(manager.getByRole('button', { name: /Import 16,?413 customer changes/ })).toBeEnabled();
 });
 
 test('large mixed CSV excludes errors and enables valid customer changes', async ({ page }) => {
