@@ -34,7 +34,7 @@ function secureDefine(name, handler) {
   });
 }
 
-resolver.define('health', async () => ({ ok: true, version: '0.2.0' }));
+resolver.define('health', async () => ({ ok: true, version: '0.3.0' }));
 
 secureDefine('getServiceDesks', async () => {
   const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
