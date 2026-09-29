@@ -4,6 +4,10 @@ Highlights and screenshots are 1840×900 PNG. Each highlight also has a 580×330
 
 Limits: highlight title ≤ 50 characters, highlight summary ≤ 220, screenshot caption ≤ 220.
 
+## App logo
+
+`app-logo-144.png` (the Marketplace logo size) and `app-logo-512.png`. It's in the Nuvriqo family: a blue gradient tile, a white N and a small badge (two people, for customers). Portal+ uses a "+". Regenerate it with `node qa/marketing/logo.cjs`.
+
 ## Highlights (use these three)
 
 ### 1. `highlight-1-know-before-you-import.png`
