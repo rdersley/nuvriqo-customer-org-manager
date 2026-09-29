@@ -77,10 +77,11 @@ The questionnaire ignores automated input, so an administrator types these in by
 > Customer & Organisation Manager is a Jira admin page for bulk-managing Jira Service Management customers and organisations. Every call is made as the signed-in Jira administrator (asUser) after a server-side check of the Administer permission.
 > storage:app stores import session metadata (row counts, row numbers, Jira bulk task ids, timestamps) and saved CSV column mappings in Forge storage; no customer names or emails are stored.
 > read:jira-work is used for GET /rest/api/3/mypermissions (the administrator check on every request), and for Client → Organisation sync: receiving issue created/updated events, reading the Jira field list, reading a ticket's Client and Organizations fields, JQL search for the sync health check, and JQL autocomplete for Client value suggestions.
+> read:jira-user is used only to find an imported customer's account id by email (GET /rest/api/3/user/search), so the import can add them to the chosen service project and their organisations.
 > write:jira-work is used only by Client → Organisation sync to set the Organizations field on a ticket (PUT /rest/api/3/issue/{id}), when an administrator has turned sync on for that project, or confirms a bulk correction.
 > read:servicedesk-request lists service projects (GET /rest/servicedeskapi/servicedesk) for the service-project picker.
-> manage:servicedesk-customer lists a service project's customers, lists organisations, and creates organisations that an import needs (/rest/servicedeskapi/servicedesk/{id}/customer, /rest/servicedeskapi/organization).
-> write:customer:jira-service-management and write:customer.profile:jira-service-management create and update customer profiles and their organisation membership through the JSM customer bulk API (/jsm/csm/api/v1/customer/profile/bulk).
+> manage:servicedesk-customer lists a service project's customers, lists organisations, creates organisations that an import needs, and adds imported customers to the chosen service project and to their organisations (/rest/servicedeskapi/servicedesk/{id}/customer, /rest/servicedeskapi/organization, /rest/servicedeskapi/organization/{id}/user).
+> write:customer:jira-service-management and write:customer.profile:jira-service-management create and update customer accounts (email, display name) through the JSM customer bulk API (/jsm/csm/api/v1/customer/profile/bulk).
 > read:task:jira-service-management reads the status of those bulk tasks (/jsm/csm/api/v1/tasks/{id}) for the Import History view.
 
 ## Pricing

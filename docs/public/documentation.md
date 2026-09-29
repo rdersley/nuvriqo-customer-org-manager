@@ -47,7 +47,9 @@ A note says when an organisation will be created. For large files, Import stays 
 
 ### 3. Import
 
-Click **Import N customer changes**. Changes are sent to Jira in batches of 100. Each batch is retried up to three times, and a retried batch is never applied twice. Missing organisations are created first. The app checks every organisation on the site before creating one, so existing organisations are never duplicated.
+Click **Import N customer changes**. Missing organisations are created first. The app checks every organisation on the site before creating one, so existing organisations are never duplicated. Customers are then created or updated in batches of 100 and added to the selected service project and their organisations. Each batch is retried up to three times, and a retried batch is never applied twice.
+
+When the import finishes, the app shows how many customers were added. It also lists any row that couldn't be finished, with Jira's reason. **Download rows to fix (CSV)** gives you those rows in the import format, ready to correct and import again.
 
 ### Resuming an interrupted import
 
@@ -96,6 +98,8 @@ Without an active licence the app is read-only: you can browse and preview, but 
 | "Required CSV column missing" | Check the header row is exactly `Email`, `Full Name` (or `Display Name`) and optionally `Organisation`. |
 | Rows marked Error with "Duplicate email in file" | Each email may appear once. Remove the duplicates and choose the file again. |
 | A batch failed after three attempts | Earlier batches are saved. Choose the same file again and click Resume. |
+| Imported customers don't show on the Customers tab | If the service project lets any customer raise requests, Jira doesn't keep a list of added customers, so they aren't listed there. They're still in their organisations and can use the portal. Projects restricted to added customers list them as usual. |
+| Rows marked "no customer account yet" | Jira takes a few minutes to make newly created customers searchable. The app re-checks for about 3 minutes after the last batch; click **Check again** later for any still waiting. |
 | Read-only notice | The site's licence isn't active. Start a trial or renew from **Manage apps**. |
 
 ## Support

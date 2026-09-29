@@ -3,10 +3,11 @@ import api, { route } from '@forge/api';
 import { kvs, WhereConditions } from '@forge/kvs';
 import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from './license.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
+import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.4.0';
+export const APP_VERSION = '0.5.0';
 
 const resolver = new Resolver();
 
@@ -404,17 +405,16 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   if (!rows.length) throw new Error('No rows supplied');
   if (rows.length > 100) throw new Error('This operation accepts at most 100 rows per request');
 
-  const customerProfiles = rows.map((row) => {
-    const p = {
+  // Creates or updates the customer accounts only. Service project and organisation membership are added
+  // afterwards by finaliseImportBatch (src/import/finalise.js), because this API can't do the first and,
+  // on a live site, silently didn't do the second.
+  const customerProfiles = rows.map((row) => ({
+    operationType: 'UPSERT',
+    payload: {
       email: String(row.email || '').trim(),
       displayName: String(row.displayName || row.fullName || '').trim()
-    };
-    const organizationIds = (row.organizationIds || [])
-      .map(Number)
-      .filter(Number.isFinite);
-    if (organizationIds.length) p.associateOrganizations = { organizationIds };
-    return { operationType: 'UPSERT', payload: p };
-  });
+    }
+  }));
 
   const suppliedKey = String(payload?.idempotencyKey || '').trim();
   const idempotencyKey = suppliedKey || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
@@ -460,40 +460,19 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   await kvs.set(`import:${history.id}`, history, IMPORT_RECORD_RETENTION);
 
   if (importSessionId) {
-    const sessionKey = `import-session:${importSessionId}`;
-    const previous = await kvs.get(sessionKey);
-    const priorBatches = Array.isArray(previous?.batches) ? previous.batches : [];
-    const withoutCurrent = priorBatches.filter((b) => Number(b.batchNumber) !== batchNumber);
-    const batches = [...withoutCurrent, {
+    await updateSessionBatch({
+      importSessionId,
       batchNumber,
-      count: rows.length,
-      taskId: task.id,
-      idempotencyKey,
-      rowStart,
-      rowEnd,
-      submittedAt: createdAt
-    }].sort((a, b) => Number(a.batchNumber) - Number(b.batchNumber));
-    const submittedRows = batches.reduce((sum, b) => sum + Number(b.count || 0), 0);
-    const completedBatches = batches.length;
-    const nextStatus = completedBatches >= totalBatches ? 'SUBMITTED' : 'IN_PROGRESS';
-    await kvs.set(sessionKey, {
-      ...previous,
-      id: importSessionId,
       totalBatches,
-      completedBatches,
-      submittedRows,
-      status: nextStatus,
-      updatedAt: createdAt,
-      batches
-    }, IMPORT_RECORD_RETENTION);
-    if (nextStatus === 'SUBMITTED' && previous?.fingerprint && previous?.serviceDeskId) {
-      await kvs.delete(`import-recovery:${previous.serviceDeskId}:${previous.fingerprint}`);
-    }
+      patch: { count: rows.length, taskId: task.id, idempotencyKey, rowStart, rowEnd, submittedAt: createdAt, finalised: false },
+      retention: IMPORT_RECORD_RETENTION
+    });
   }
 
   return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
 }, { write: true });
 
 registerSyncResolvers(secureDefine);
+registerImportFinalise(secureDefine, { retention: IMPORT_RECORD_RETENTION });
 
 export const handler = resolver.getDefinitions();

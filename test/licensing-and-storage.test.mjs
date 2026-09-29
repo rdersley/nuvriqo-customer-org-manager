@@ -93,10 +93,16 @@ test('sessions saved before chunking (inline row numbers) still recover', async 
   assert.deepEqual(recovered.actionableRowNumbers, [5, 6]);
 });
 
-test('completing every batch marks the session submitted and clears the recovery pointer', async () => {
+test('a session is submitted only once every batch is finalised, then the recovery pointer is cleared', async () => {
   await call('startImportSession', { id: 's2', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2, 3], totalRows: 2, totalBatches: 1 });
-  await call('bulkUpsertCustomers', { rows: [{ email: 'a@x.test', displayName: 'A' }, { email: 'b@x.test', displayName: 'B' }], importSessionId: 's2', batchNumber: 1, totalBatches: 1, idempotencyKey: 's2-batch-1' });
+  const rows = [{ rowNumber: 2, email: 'a@x.test', displayName: 'A' }, { rowNumber: 3, email: 'b@x.test', displayName: 'B' }];
+  await call('bulkUpsertCustomers', { rows, importSessionId: 's2', batchNumber: 1, totalBatches: 1, idempotencyKey: 's2-batch-1' });
+  assert.equal(store.get('import-session:s2').status, 'IN_PROGRESS', 'submitted to Jira but not finalised yet');
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, 's2', 'still resumable until finalised');
+
+  await call('finaliseImportBatch', { rows, serviceDeskId: '1', importSessionId: 's2', batchNumber: 1, totalBatches: 1 });
   assert.equal(store.get('import-session:s2').status, 'SUBMITTED');
+  assert.equal(store.get('import-session:s2').linkedRows, 2);
   assert.equal(store.has(`import-recovery:1:${fingerprint}`), false);
   assert.equal(await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), null);
   assert.equal(site.bulkRequests[0].idempotencyKey, 's2-batch-1');

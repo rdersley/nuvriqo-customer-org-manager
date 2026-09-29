@@ -1,6 +1,6 @@
 {
   "name": "nuvriqo-customer-organisation-manager",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "scripts": {
     "postinstall": "npm --prefix static install",
