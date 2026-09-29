@@ -1,0 +1,32 @@
+// Issue event trigger for Client → Organisation sync. Runs as the app (no user in background events).
+// The manifest filter skips unlicensed sites and the app's own edits; see manifest.yml.
+import api from '@forge/api';
+import { changelogTouchesField, inScope } from './rules.js';
+import { getConfig, fetchSyncIssue, setOrganisations, evaluateIssue, logCorrection } from './jira.js';
+import { triggerLicenseAllows } from '../license.js';
+
+export async function handleIssueEvent(event, context) {
+  if (!triggerLicenseAllows(context)) return { skipped: 'unlicensed' };
+  const config = await getConfig();
+  if (!config?.enabled) return { skipped: 'disabled' };
+
+  const isUpdate = event?.eventType === 'avi:jira:updated:issue';
+  if (isUpdate && !changelogTouchesField(event?.changelog, config.clientFieldId)) return { skipped: 'client-unchanged' };
+  const eventProject = event?.issue?.fields?.project?.key;
+  if (eventProject && !config.projectKeys.includes(eventProject)) return { skipped: 'out-of-scope' };
+
+  const issueId = event?.issue?.id;
+  if (!issueId) return { skipped: 'no-issue' };
+  const jira = api.asApp();
+  const issue = await fetchSyncIssue(jira, issueId, config);
+  if (!inScope(config, issue)) return { skipped: 'out-of-scope' };
+
+  const result = evaluateIssue(issue, config);
+  if (result.status === 'needs-change') {
+    await setOrganisations(jira, issue.id, config, result.target);
+    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.target, source: isUpdate ? 'client-changed' : 'created' });
+  } else if (result.status === 'missing-mapping') {
+    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.current, source: 'missing-mapping' });
+  }
+  return { status: result.status, issueKey: issue.key };
+}

@@ -44,3 +44,10 @@ export function resolverLicenseAllows(context, env = process.env) {
 
 export const UNLICENSED_MESSAGE = 'Customer & Organisation Manager is read-only because this site has no active licence. '
   + 'Browsing and previews still work; ask a Jira administrator to renew or start a trial from Manage apps to import changes.';
+
+// Event triggers get no licence object from Forge; `filter.appIsLicensed` in manifest.yml does the real
+// enforcement. This only rejects what is explicitly inactive (defence in depth).
+export function triggerLicenseAllows(context, env = process.env) {
+  if (licenseOverride(env) === false) return false;
+  return context?.license?.active !== false;
+}
