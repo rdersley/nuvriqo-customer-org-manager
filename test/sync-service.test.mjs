@@ -32,7 +32,7 @@ test('setup detects the Organizations and Request Type fields and lists single-s
   const { fields, config } = await call('getSyncSetup', {});
   assert.deepEqual(fields.organisationsField, { id: ORG_FIELD, name: 'Organizations' });
   assert.deepEqual(fields.requestTypeField, { id: REQUEST_TYPE_FIELD, name: 'Request Type' });
-  assert.deepEqual(fields.clientCandidates.map((f) => [f.name, f.type]), [['Brand code', 'text'], ['Client', 'select']]);
+  assert.deepEqual(fields.clientCandidates.map((f) => [f.name, f.type]), [['Brand code', 'text'], ['Client', 'select'], ['Site', 'select']]);
   assert.equal(config.organisationsFieldId, ORG_FIELD, 'field ids come from the site, not the browser');
 });
 
@@ -158,4 +158,42 @@ test('when Jira rejects the change (org not in the project) the event logs a fai
   const entry = (await call('getSyncLog', {})).find((e) => e.issueKey === 'SD-40');
   assert.equal(entry.source, 'failed');
   assert.match(entry.error, /Invalid organization ids/);
+});
+
+// ---- second field ----
+import { SECOND_FIELD } from './mocks/api.mjs';
+const splitMappings = [
+  { clientValue: 'RYR', organizationId: '10', organizationName: 'Ryanair' },
+  { clientValue: 'RYR', secondaryValue: 'Dublin', organizationId: '11', organizationName: 'Ryanair Dublin' },
+  { clientValue: 'RYR', secondaryValue: 'London', organizationId: '12', organizationName: 'Ryanair London' }
+];
+const secondChanged = (id) => ({ ...updated(id), changelog: { items: [{ fieldId: SECOND_FIELD }] } });
+
+test('second field: changing only the second field re-evaluates and swaps the organisation', async () => {
+  await call('saveSyncConfig', settings({ secondaryFieldId: SECOND_FIELD, mappings: splitMappings }));
+  addIssue({ id: 50, key: 'SD-50', client: 'RYR', second: 'London', orgIds: ['11'] });
+  const r = await handleIssueEvent(secondChanged(50), {});
+  assert.equal(r.status, 'needs-change');
+  assert.deepEqual(orgIdsOf(50), ['12']);
+  const entry = (await call('getSyncLog', {})).find((e) => e.issueKey === 'SD-50');
+  assert.equal(entry.secondaryValue, 'London');
+});
+
+test('second field: without it configured, second-field changes are ignored', async () => {
+  addIssue({ id: 51, key: 'SD-51', client: 'RYR', second: 'London', orgIds: [] });
+  assert.equal((await handleIssueEvent(secondChanged(51), {})).skipped, 'client-unchanged');
+});
+
+test('second field: health check reports unmapped Client + second combinations', async () => {
+  const noDefault = splitMappings.filter((m) => m.secondaryValue);
+  await call('saveSyncConfig', settings({ secondaryFieldId: SECOND_FIELD, mappings: noDefault }));
+  addIssue({ id: 52, key: 'SD-52', client: 'RYR', second: 'Paris' });
+  addIssue({ id: 53, key: 'SD-53', client: 'RYR', second: 'Dublin' });
+  const scan = await call('scanSyncHealth', {});
+  assert.deepEqual(scan.missing, { 'RYR\u001fParis': 1 });
+  assert.deepEqual(scan.needsChange.map((x) => [x.key, x.secondaryValue, x.to]), [['SD-53', 'Dublin', ['11']]]);
+});
+
+test('second field: saving rejects a field that is not a select/text custom field', async () => {
+  await assert.rejects(call('saveSyncConfig', settings({ secondaryFieldId: 'customfield_10070', mappings: splitMappings })), /second field is not a single-select or text/);
 });

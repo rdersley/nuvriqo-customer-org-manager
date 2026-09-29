@@ -51,7 +51,7 @@ export async function detectFields(jira) {
 }
 
 function syncFieldList(config) {
-  return ['project', config.clientFieldId, config.organisationsFieldId, config.requestTypeFieldId].filter(Boolean);
+  return ['project', config.clientFieldId, config.secondaryFieldId, config.organisationsFieldId, config.requestTypeFieldId].filter(Boolean);
 }
 
 // Reduces a Jira issue to what the sync needs.
@@ -63,6 +63,7 @@ export function toSyncIssue(issue, config) {
     projectKey: fields.project?.key || '',
     requestTypeId: config.requestTypeFieldId ? String(fields[config.requestTypeFieldId]?.requestType?.id ?? '') : '',
     clientFieldValue: fields[config.clientFieldId] ?? null,
+    secondaryFieldValue: config.secondaryFieldId ? fields[config.secondaryFieldId] ?? null : null,
     organisationsFieldValue: fields[config.organisationsFieldId] ?? []
   };
 }
@@ -86,6 +87,7 @@ export async function setOrganisations(jira, issueId, config, organisationIds) {
 export function evaluateIssue(syncIssue, config) {
   return evaluate({
     clientFieldValue: syncIssue.clientFieldValue,
+    secondaryFieldValue: syncIssue.secondaryFieldValue,
     organisationsFieldValue: syncIssue.organisationsFieldValue,
     mappings: config.mappings
   });
@@ -93,13 +95,17 @@ export function evaluateIssue(syncIssue, config) {
 
 export async function logCorrection(entry) {
   const at = new Date().toISOString();
-  await kvs.set(`sync-log:${at}:${entry.issueKey}`, { ...entry, at }, SYNC_LOG_RETENTION);
+  const record = Object.fromEntries(Object.entries({ ...entry, at }).filter(([, v]) => v !== undefined && v !== ''));
+  await kvs.set(`sync-log:${at}:${entry.issueKey}`, record, SYNC_LOG_RETENTION);
 }
 
 export async function recentCorrections(limit = 100) {
   const result = await kvs.query().where('key', WhereConditions.beginsWith('sync-log:')).limit(Math.min(limit, 100)).getMany();
   return (result.results || []).map((r) => r.value).sort((a, b) => String(b.at).localeCompare(String(a.at)));
 }
+
+// The label for an unmapped value in the health check: the Client value, plus the second value if set.
+export const missingLabel = (r) => (r.secondaryValue ? `${r.clientValue}\u001f${r.secondaryValue}` : r.clientValue);
 
 // JQL for the tickets the sync is responsible for: selected projects, Client set.
 export function scopeJql(config) {

@@ -12,7 +12,7 @@ const orgs = (...ids) => ids.map((id) => ({ id: String(id), name: `Org ${id}` })
 const run = (client, current) => evaluate({ clientFieldValue: client == null ? null : { value: client }, organisationsFieldValue: current, mappings });
 
 test('adds the mapped organisation when the ticket has none', () => {
-  assert.deepEqual(run('RYR', []), { status: 'needs-change', clientValue: 'RYR', current: [], target: ['10'] });
+  assert.deepEqual(run('RYR', []), { status: 'needs-change', clientValue: 'RYR', secondaryValue: '', current: [], target: ['10'] });
 });
 
 test('already correct: nothing to do', () => {
@@ -78,4 +78,54 @@ test('scope: project must be selected; ignored request types are skipped', () =>
   assert.equal(inScope(c, { projectKey: 'sd' }), true);
   assert.equal(inScope(c, { projectKey: 'OPS' }), false);
   assert.equal(inScope(c, { projectKey: 'SD', requestTypeId: '7' }), false);
+});
+
+// ---- second field: one client across several organisations ----
+// RYR: Dublin -> 11, London -> 12, anything else -> 10 (default). LDA has no split.
+const split = [
+  { clientValue: 'RYR', secondaryValue: '', organizationId: '10' },
+  { clientValue: 'RYR', secondaryValue: 'Dublin', organizationId: '11' },
+  { clientValue: 'RYR', secondaryValue: 'London', organizationId: '12' },
+  { clientValue: 'LDA', organizationId: '30' }
+];
+const run2 = (client, second, current) => evaluate({ clientFieldValue: { value: client }, secondaryFieldValue: second == null ? null : { value: second }, organisationsFieldValue: current, mappings: split });
+
+test('second field: the Client + second value row wins over the client default', () => {
+  assert.deepEqual(run2('RYR', 'Dublin', []).target, ['11']);
+  assert.deepEqual(run2('ryr', ' london ', []).target, ['12']);
+});
+
+test('second field: empty or unmapped second value falls back to the client default', () => {
+  assert.deepEqual(run2('RYR', null, []).target, ['10']);
+  assert.deepEqual(run2('RYR', 'Paris', []).target, ['10']);
+});
+
+test('second field: switching Dublin -> London swaps the organisation; hand-added orgs stay', () => {
+  const r = run2('RYR', 'London', orgs(11, 99));
+  assert.equal(r.status, 'needs-change');
+  assert.deepEqual(r.target.sort(), ['12', '99']);
+});
+
+test('second field: the default org is removed when a specific row now applies (all rows count as mapped)', () => {
+  assert.deepEqual(run2('RYR', 'Dublin', orgs(10)).target, ['11']);
+});
+
+test('second field: clients without a split ignore the second value', () => {
+  assert.deepEqual(run2('LDA', 'Dublin', []).target, ['30']);
+});
+
+test('second field: no default and no matching row is flagged, with both values', () => {
+  const noDefault = split.filter((m) => !(m.clientValue === 'RYR' && !m.secondaryValue));
+  const r = evaluate({ clientFieldValue: { value: 'RYR' }, secondaryFieldValue: { value: 'Paris' }, organisationsFieldValue: orgs(11), mappings: noDefault });
+  assert.equal(r.status, 'missing-mapping');
+  assert.equal(r.secondaryValue, 'Paris');
+  assert.deepEqual(r.target, ['11'], 'nothing changes');
+});
+
+test('second field config: pair duplicates rejected; values need the field; field must differ from Client', () => {
+  const base = { clientFieldId: 'customfield_10050', secondaryFieldId: 'customfield_10080', organisationsFieldId: 'customfield_10002', projectKeys: ['SD'] };
+  assert.equal(normaliseConfig({ ...base, mappings: split }).mappings.length, 4, 'same client with different second values is fine');
+  assert.throws(() => normaliseConfig({ ...base, mappings: [...split, { clientValue: 'ryr', secondaryValue: 'dublin', organizationId: '13' }] }), /with "dublin" is mapped more than once/);
+  assert.throws(() => normaliseConfig({ ...base, secondaryFieldId: '', mappings: split }), /Choose the second field/);
+  assert.throws(() => normaliseConfig({ ...base, secondaryFieldId: 'customfield_10050', mappings: split }), /different from the Client field/);
 });
