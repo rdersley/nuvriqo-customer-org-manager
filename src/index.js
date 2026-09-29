@@ -6,7 +6,7 @@ import { registerSyncResolvers } from './sync/resolvers.js';
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 
 const resolver = new Resolver();
 

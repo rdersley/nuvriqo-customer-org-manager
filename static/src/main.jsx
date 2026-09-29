@@ -5,10 +5,11 @@ import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Field, Footer } from '@nuvriqo/ui/react';
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
+import OrgSync from './OrgSync.jsx';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
-const tabs = ['Customers', 'Organisations', 'Import', 'Import History'];
+const tabs = ['Customers', 'Organisations', 'Import', 'Import History', 'Organisation sync'];
 
 function parseCsv(text) {
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
@@ -606,6 +607,7 @@ function App() {
             : <EmptyState title="No bulk tasks yet" compact>Each import batch is recorded here with its Jira task status.</EmptyState>}
         </div>
       </Card>}
+      {tab === 'Organisation sync' && <OrgSync invoke={invoke} serviceDesks={serviceDesks} orgs={orgs} loadOrgs={loadOrgs} readOnly={readOnly}/>}
     </div>
     <Footer product="Customer & Organisation Manager" version={APP_VERSION}/>
   </div>;

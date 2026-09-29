@@ -1,6 +1,6 @@
 # Security — Nuvriqo Customer & Organisation Manager
 
-_Last updated: 28 September 2026 (app version 0.3.0)._
+_Last updated: 29 September 2026 (app version 0.4.0)._
 
 ## Architecture
 
@@ -10,12 +10,13 @@ Forge-native. No Forge Remote, no external fetch, no vendor servers. Compute and
 
 - The app is a Jira **admin page**; it only appears in Jira administration.
 - **Every resolver checks the Jira Administer global permission** (`/rest/api/3/mypermissions`) before doing anything, so calling a resolver directly without admin rights fails (`secureDefine` in `src/index.js`). A unit test covers this.
-- All Jira calls use `asUser()`: the app can never do more than the signed-in administrator could do in Jira.
+- All calls from the admin page use `asUser()`: the app page can never do more than the signed-in administrator could do in Jira.
+- The Client → Organisation sync trigger (`avi:jira:created:issue`, `avi:jira:updated:issue`) runs as the app (`asApp()`), because background events have no user. It only acts when an administrator has turned sync on, only on the selected projects, and only edits the Organizations field. The manifest filter skips unlicensed sites (`appIsLicensed`) and the app's own edits (`ignoreSelf`), so it can't loop.
 - No anonymous endpoints, web triggers or scheduled jobs.
 
 ## Licensing
 
-Production fails closed. Without an active licence, reads and previews work, and every write resolver (`createOrganization`, `createImportOrganizations`, `saveImportMapping`, `deleteImportMapping`, `startImportSession`, `bulkUpsertCustomers`) refuses the call. Covered by unit tests.
+Production fails closed. Without an active licence, reads and previews work, and every write resolver (`createOrganization`, `createImportOrganizations`, `saveImportMapping`, `deleteImportMapping`, `startImportSession`, `bulkUpsertCustomers`, `saveSyncConfig`, `saveSyncHealth`, `applySyncCorrections`) refuses the call. The sync trigger doesn't run on unlicensed sites. Covered by unit tests.
 
 ## Safe import behaviour
 
@@ -29,7 +30,8 @@ Production fails closed. Without an active licence, reads and previews work, and
 | Scope | Needed for |
 |---|---|
 | `storage:app` | Import sessions, row plans, bulk task records and saved mappings in Forge KVS |
-| `read:jira-work` | `GET /rest/api/3/mypermissions`, the admin check on every call |
+| `read:jira-work` | `GET /rest/api/3/mypermissions` (the admin check on every call); reading the field list, ticket fields, JQL search and autocomplete for sync; receiving issue created/updated events |
+| `write:jira-work` | Sync: setting the Organizations field on a ticket (`PUT /rest/api/3/issue/{id}`) |
 | `read:servicedesk-request` | `GET /rest/servicedeskapi/servicedesk`, listing service projects |
 | `manage:servicedesk-customer` | Listing a service project's customers, listing organisations, and creating organisations (`/rest/servicedeskapi/servicedesk/{id}/customer`, `/rest/servicedeskapi/organization`) |
 | `write:customer:jira-service-management` | Creating and updating customers through the JSM customer bulk API |
