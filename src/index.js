@@ -2,9 +2,11 @@ import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 import { kvs, WhereConditions } from '@forge/kvs';
 import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from './license.js';
+import { registerSyncResolvers } from './sync/resolvers.js';
+export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 
 const resolver = new Resolver();
 
@@ -491,5 +493,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
 
   return { ...task, importSessionId, batchNumber, totalBatches, idempotencyKey };
 }, { write: true });
+
+registerSyncResolvers(secureDefine);
 
 export const handler = resolver.getDefinitions();

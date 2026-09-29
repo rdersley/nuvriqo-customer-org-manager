@@ -1,23 +1,100 @@
-// A fake Jira site: `site.organizations` backs the JSM organisation endpoints; every request is logged.
-export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true };
+// A fake Jira site. `site.organizations` backs the JSM organisation endpoints; `site.issues` and
+// `site.fields` back the issue, field and JQL search endpoints used by Client → Organisation sync.
+// Every request is logged with who made it (`user` for asUser, `app` for asApp).
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map() };
+
+export const CLIENT_FIELD = 'customfield_10050';
+export const ORG_FIELD = 'customfield_10002';
+export const REQUEST_TYPE_FIELD = 'customfield_10010';
 
 export function resetSite(count = 0) {
   site.organizations = Array.from({ length: count }, (_, i) => ({ id: String(i + 1), name: `Org ${i + 1}` }));
   site.requests = [];
   site.bulkRequests = [];
   site.isAdmin = true;
+  site.issues = new Map();
+  site.failIssueIds = new Set();
+  // Service projects, and the organisations added to each (Jira only accepts those on a ticket).
+  site.serviceDesks = [{ id: '1', projectKey: 'SD', projectName: 'Service desk' }, { id: '2', projectKey: 'OPS', projectName: 'Operations' }];
+  site.projectOrgs = new Map();
+  site.fields = [
+    { id: 'summary', name: 'Summary', custom: false, schema: { system: 'summary' } },
+    { id: CLIENT_FIELD, name: 'Client', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select' } },
+    { id: 'customfield_10060', name: 'Brand code', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield' } },
+    { id: 'customfield_10070', name: 'Story points', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float' } },
+    { id: ORG_FIELD, name: 'Organizations', custom: true, schema: { custom: 'com.atlassian.servicedesk:sd-customer-organizations' } },
+    { id: REQUEST_TYPE_FIELD, name: 'Request Type', custom: true, schema: { custom: 'com.atlassian.servicedesk:vp-origin' } }
+  ];
 }
+
+// Adds a ticket. `orgIds` are organisation ids already on it.
+export function addIssue({ id, key, project = 'SD', client = null, orgIds = [], requestTypeId = '1' }) {
+  site.issues.set(String(id), {
+    id: String(id),
+    key,
+    fields: {
+      project: { key: project },
+      [CLIENT_FIELD]: client == null ? null : { value: client, id: `opt-${client}` },
+      [ORG_FIELD]: orgIds.map((o) => ({ id: Number(o), name: `Org ${o}` })),
+      [REQUEST_TYPE_FIELD]: { requestType: { id: requestTypeId } }
+    }
+  });
+}
+
+export const orgIdsOf = (id) => site.issues.get(String(id)).fields[ORG_FIELD].map((o) => String(o.id));
 
 export const route = (strings, ...values) =>
   strings.reduce((out, s, i) => out + s + (i < values.length ? encodeURIComponent(values[i]) : ''), '');
 
-const json = (body, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
+const json = (body, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body), json: async () => body });
 
-async function requestJira(path, options = {}) {
+function findIssue(idOrKey) {
+  return site.issues.get(String(idOrKey)) || [...site.issues.values()].find((i) => i.key === idOrKey);
+}
+
+async function requestJira(as, path, options = {}) {
   const method = options.method || 'GET';
-  site.requests.push({ method, path });
+  site.requests.push({ as, method, path });
   if (path.startsWith('/rest/api/3/mypermissions')) {
     return json({ permissions: { ADMINISTER: { havePermission: site.isAdmin } } });
+  }
+  if (path === '/rest/api/3/field') return json(site.fields);
+  if (path.startsWith('/rest/api/3/jql/autocompletedata/suggestions')) {
+    return json({ results: [{ value: 'RYR', displayName: 'RYR' }, { value: '"Other Client"', displayName: 'Other Client' }] });
+  }
+  if (path === '/rest/api/3/search/jql' && method === 'POST') {
+    const body = JSON.parse(options.body);
+    const projects = [...body.jql.matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);
+    const all = [...site.issues.values()]
+      .filter((i) => projects.includes(i.fields.project.key) && i.fields[CLIENT_FIELD] != null)
+      .sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+    const start = Number(body.nextPageToken || 0);
+    const issues = all.slice(start, start + body.maxResults).map((i) => structuredClone(i));
+    const next = start + body.maxResults < all.length ? String(start + body.maxResults) : undefined;
+    return json({ issues, nextPageToken: next, isLast: !next });
+  }
+  const issueMatch = path.match(/^\/rest\/api\/3\/issue\/([^/?]+)(\?.*)?$/);
+  if (issueMatch) {
+    const issue = findIssue(decodeURIComponent(issueMatch[1]));
+    if (!issue) return json({ errorMessages: ['Issue does not exist'] }, 404);
+    if (method === 'GET') return json(structuredClone(issue));
+    if (method === 'PUT') {
+      if (site.failIssueIds.has(issue.id)) return json({ errorMessages: ['You do not have permission to edit issues in this project.'] }, 403);
+      const { fields } = JSON.parse(options.body);
+      const allowed = site.projectOrgs.get(issue.fields.project.key);
+      if (fields[ORG_FIELD] && allowed && fields[ORG_FIELD].some((id) => !allowed.includes(String(id)))) {
+        return json({ errorMessages: ['Invalid organization ids specified.'], errors: { [ORG_FIELD]: 'Specify a valid value for Organizations ID' } }, 400);
+      }
+      if (fields[ORG_FIELD]) issue.fields[ORG_FIELD] = fields[ORG_FIELD].map((id) => ({ id, name: `Org ${id}` }));
+      return { ok: true, status: 204, text: async () => '' };
+    }
+  }
+  if (path.startsWith('/rest/servicedeskapi/servicedesk?')) return json({ values: site.serviceDesks, isLastPage: true });
+  const deskOrgs = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/]+)\/organization\?/);
+  if (deskOrgs) {
+    const desk = site.serviceDesks.find((d) => d.id === deskOrgs[1]);
+    const ids = site.projectOrgs.get(desk?.projectKey) || [];
+    return json({ values: ids.map((id) => ({ id, name: 'Org ' + id })), isLastPage: true });
   }
   if (path.startsWith('/rest/servicedeskapi/organization') && method === 'POST') {
     const { name } = JSON.parse(options.body);
@@ -43,4 +120,7 @@ async function requestJira(path, options = {}) {
   throw new Error(`Unexpected request ${method} ${path}`);
 }
 
-export default { asUser: () => ({ requestJira }), asApp: () => ({ requestJira }) };
+export default {
+  asUser: () => ({ requestJira: (path, options) => requestJira('user', path, options) }),
+  asApp: () => ({ requestJira: (path, options) => requestJira('app', path, options) })
+};

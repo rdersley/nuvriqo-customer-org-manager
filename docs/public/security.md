@@ -19,7 +19,12 @@
 
 It stores no names, email addresses or Atlassian account IDs.
 
-**What the app changes in Jira**, only when an administrator clicks Import or Resume: creates or updates customers in the selected service project, adds them to organisations, and creates organisations that don't exist yet.
+**What the app changes in Jira:**
+
+- When an administrator clicks Import or Resume: creates or updates customers in the selected service project, adds them to organisations, and creates organisations that don't exist yet.
+- When Organisation sync is on: sets the Organizations field on tickets in the projects an administrator selected, when a ticket is created or its Client changes. This runs in the background as the app, and only edits the Organizations field. Administrators can also correct existing tickets from the Sync health check.
+
+Sync also keeps its settings and mappings, the last check's counts, and a log of corrections (ticket key, Client value, organisations before and after) for 90 days.
 
 ## Access and permissions
 
@@ -28,7 +33,8 @@ Every request is checked on the server for the **Administer Jira** permission. T
 | Scope | Used for |
 |---|---|
 | `storage:app` | Storing import records and saved mappings |
-| `read:jira-work` | Checking the administrator permission |
+| `read:jira-work` | Checking the administrator permission; reading ticket fields for Organisation sync |
+| `write:jira-work` | Setting the Organizations field for Organisation sync |
 | `read:servicedesk-request` | Listing service projects |
 | `manage:servicedesk-customer` | Listing customers and organisations, and creating organisations |
 | `write:customer:jira-service-management`, `write:customer.profile:jira-service-management` | Creating and updating customers and their organisation membership |

@@ -1,14 +1,15 @@
 # Data handling — Nuvriqo Customer & Organisation Manager
 
-_Last checked against the code: 28 September 2026 (app version 0.3.0)._
+_Last checked against the code: 29 September 2026 (app version 0.4.0)._
 
 This is the source of truth for the Privacy & Security questionnaire and the public security page. If the code changes what is read, written or stored, update this file in the same pull request.
 
 ## Architecture
 
-- Forge-native Jira admin page (`jira:adminPage`) with one resolver function.
+- Forge-native Jira admin page (`jira:adminPage`) with one resolver function, plus one issue event trigger for Client → Organisation sync.
 - No Forge Remote, no external fetch, no vendor-operated servers, no analytics.
-- Every Jira call uses `api.asUser()`, so it runs with the signed-in administrator's own permissions. The app never uses `asApp()`.
+- Every call from the admin page uses `api.asUser()`, so it runs with the signed-in administrator's own permissions.
+- The sync event trigger has no signed-in user, so it uses `api.asApp()`. It reads only the configured fields of the ticket that changed, and writes only its Organizations field.
 - Every resolver first checks that the caller has the Jira **Administer** global permission.
 
 ## Data read from Jira / JSM
@@ -20,6 +21,10 @@ This is the source of truth for the Privacy & Security questionnaire and the pub
 | Customers of a service project (account id, display name, email) | `GET /rest/servicedeskapi/servicedesk/{id}/customer` | Customer list/search and the import comparison |
 | Organisations (id, name) | `GET /rest/servicedeskapi/organization` | Organisation list, and matching CSV organisation names |
 | Bulk task status | `GET /jsm/csm/api/v1/tasks/{id}` | Import History status column |
+| Jira field list (id, name, type) | `GET /rest/api/3/field` | Finding the Organizations and Request Type fields, and Client field candidates |
+| A ticket's project, Client, Organizations and Request Type fields | `GET /rest/api/3/issue/{id}?fields=…` | Sync: deciding the correct organisations |
+| Tickets in the selected projects with a Client value (the same fields) | `POST /rest/api/3/search/jql` | Sync health check |
+| Client value suggestions | `GET /rest/api/3/jql/autocompletedata/suggestions` | Filling in the mapping table |
 
 Customer names and emails are shown in the browser and used in memory for the preview. **They are never written to app storage.**
 
@@ -29,6 +34,7 @@ Customer names and emails are shown in the browser and used in memory for the pr
 |---|---|---|
 | Create an organisation | `POST /rest/servicedeskapi/organization` | Only for organisation names that a complete scan of the site proved missing, when an administrator clicks Import or Resume |
 | Create or update customer profiles, and add them to organisations | `POST /jsm/csm/api/v1/customer/profile/bulk` | When an administrator clicks Import or Resume; at most 100 rows per request, each with an idempotency key |
+| Set a ticket's Organizations field | `PUT /rest/api/3/issue/{id}` (Organizations field only) | Sync: when sync is on and a ticket in a selected project is created or its Client changes (as the app); or when an administrator confirms **Correct N tickets** (as the administrator) |
 
 ## CSV files
 
@@ -48,8 +54,11 @@ Installation-scoped Forge KVS only. No customer names or email addresses are sto
 | `import-recovery:<serviceDeskId>:<fingerprint>` | Pointer to the session that can be resumed for a file | 180 days, or deleted when the session completes |
 | `import:<idempotencyKey>` | Bulk task record: Jira task id, batch number, row count, row range, timestamp | 180 days |
 | `import-mapping:<id>` | Saved CSV column mapping: mapping name, service project id, CSV header names | Until an administrator deletes it |
+| `sync-config` | Sync settings: on/off, Client, Organizations and Request Type field ids, project keys, ignored request type ids, and the Client value → organisation id/name mappings | Until changed |
+| `sync-health` | The last ticket check's counts, and unmapped Client values with ticket counts | Replaced by the next check |
+| `sync-log:<time>:<issueKey>` | A correction: issue key, Client value, organisation ids before and after, and why (client changed / new ticket / bulk correction / no mapping) | 90 days (KVS TTL) |
 
-**Personal data:** the app stores no Atlassian account IDs, emails or names, so it does not use the Personal Data Reporting API (`report:personal-data` is not requested). The CSV file name is stored as typed by the administrator; admins should avoid putting personal data in file names.
+**Personal data:** the app stores no Atlassian account IDs, emails or names (Client values and organisation names are business data), so it does not use the Personal Data Reporting API (`report:personal-data` is not requested). The CSV file name is stored as typed by the administrator; admins should avoid putting personal data in file names.
 
 ## Licensing and read-only mode
 

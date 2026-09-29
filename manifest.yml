@@ -6,9 +6,21 @@ modules:
         function: resolver
       title: Customer & Organisation Manager
       layout: blank
+  trigger:
+    # Client → Organisation sync. Skips unlicensed sites and the app's own edits.
+    - key: org-sync-issue-events
+      function: org-sync
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+      filter:
+        appIsLicensed: true
+        ignoreSelf: true
   function:
     - key: resolver
       handler: index.handler
+    - key: org-sync
+      handler: index.handleIssueEvent
 resources:
   - key: main
     path: static/dist
@@ -17,6 +29,7 @@ permissions:
     # Why each scope is needed: docs/SECURITY.md
     - storage:app
     - read:jira-work
+    - write:jira-work
     - read:servicedesk-request
     - manage:servicedesk-customer
     - write:customer:jira-service-management
