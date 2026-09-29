@@ -117,49 +117,77 @@ secureDefine('createOrganization', async ({ payload }) => {
   return jsonResponse(res);
 });
 
-async function listOrganizationsForNames(names) {
-  const wanted = [...new Set((names || []).map(v => String(v || '').trim()).filter(Boolean))];
-  if (!wanted.length) return { organizations: [], missing: [] };
+const ORG_LOOKUP_MAX_PAGES = 40;
+const ORG_LOOKUP_BUDGET_MS = 15000;
+const ORG_CREATE_MAX_PER_CALL = 20;
 
-  const existing = [];
-  let start = 0;
-  for (let page = 0; page < 20; page += 1) {
-    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
-    const body = await jsonResponse(res);
-    existing.push(...(body.values || []));
-    if (body.isLastPage || !(body.values || []).length) break;
-    start += body.limit || 50;
-  }
-
-  const byName = new Map(existing.map(o => [String(o.name).toLowerCase(), o]));
-  return {
-    organizations: wanted.map((name) => byName.get(name.toLowerCase())).filter(Boolean),
-    missing: wanted.filter((name) => !byName.has(name.toLowerCase()))
-  };
+function organisationKey(name) {
+  return String(name || '').trim().toLowerCase();
 }
 
+function uniqueOrganisationNames(names) {
+  const byKey = new Map();
+  for (const value of names || []) {
+    const name = String(value || '').trim();
+    if (name && !byKey.has(organisationKey(name))) byKey.set(organisationKey(name), name);
+  }
+  return [...byKey.values()];
+}
+
+// Scans Jira organisations from `start` for the wanted names. Stops at Jira's final page, once every
+// name is found, or when the page/time budget runs out; callers resume from `nextStart` until `complete`.
 secureDefine('getImportOrganizations', async ({ payload }) => {
-  return listOrganizationsForNames(payload?.names || []);
+  const wanted = new Set(uniqueOrganisationNames(payload?.names).map(organisationKey));
+  let start = Math.max(0, Number(payload?.start || 0));
+  const maxPages = Math.min(ORG_LOOKUP_MAX_PAGES, Math.max(1, Number(payload?.pages || ORG_LOOKUP_MAX_PAGES)));
+  const deadline = Date.now() + ORG_LOOKUP_BUDGET_MS;
+  const organizations = [];
+  let complete = wanted.size === 0;
+  let pagesFetched = 0;
+
+  while (!complete && pagesFetched < maxPages && Date.now() < deadline) {
+    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
+    const body = await jsonResponse(res);
+    const values = body?.values || [];
+    pagesFetched += 1;
+    for (const org of values) {
+      const key = organisationKey(org.name);
+      if (wanted.delete(key)) organizations.push({ id: org.id, name: org.name });
+    }
+
+    if (body?.isLastPage || values.length === 0) {
+      complete = true;
+      break;
+    }
+
+    const nextStart = Number(body?.start ?? start) + Number(body?.limit || 50);
+    if (!Number.isFinite(nextStart) || nextStart <= start) {
+      throw new Error('Jira organisation pagination did not advance safely.');
+    }
+    start = nextStart;
+    if (wanted.size === 0) break;
+  }
+
+  return { organizations, nextStart: start, complete, allFound: wanted.size === 0, pagesFetched };
 });
 
-secureDefine('prepareImportOrganizations', async ({ payload }) => {
-  const names = [...new Set((payload?.names || []).map(v => String(v || '').trim()).filter(Boolean))];
-  if (!names.length) return { organizations: [], created: [] };
-
-  const found = await listOrganizationsForNames(names);
-  const byName = new Map(found.organizations.map(o => [String(o.name).toLowerCase(), o]));
+// Only call with names that a complete getImportOrganizations scan reported as missing.
+secureDefine('createImportOrganizations', async ({ payload }) => {
+  const names = uniqueOrganisationNames(payload?.names);
+  if (names.length > ORG_CREATE_MAX_PER_CALL) {
+    throw new Error(`Create at most ${ORG_CREATE_MAX_PER_CALL} organisations per call.`);
+  }
   const created = [];
-  for (const name of found.missing) {
+  for (const name of names) {
     const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ name })
     });
     const org = await jsonResponse(res);
-    byName.set(name.toLowerCase(), org);
-    created.push(org);
+    created.push({ id: org.id, name: org.name });
   }
-  return { organizations: names.map((name) => byName.get(name.toLowerCase())).filter(Boolean), created };
+  return { created };
 });
 
 secureDefine('getImportMappings', async () => {

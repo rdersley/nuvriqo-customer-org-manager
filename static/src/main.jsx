@@ -62,6 +62,57 @@ function validateRowsLocally(rows) {
   return { total: rows.length, valid: Math.max(0, rows.length - invalidRowCount), errors };
 }
 
+const organisationKey = (name) => String(name || '').trim().toLowerCase();
+
+// Pages through every Jira organisation (in resumable resolver calls) looking for the given names.
+// Throws rather than returning a partial answer, so callers never treat an unscanned org as missing.
+async function lookupOrganisations(names) {
+  const byKey = new Map();
+  (names || []).map((n) => String(n || '').trim()).filter(Boolean)
+    .forEach((n) => { if (!byKey.has(organisationKey(n))) byKey.set(organisationKey(n), n); });
+  const wanted = [...byKey.values()];
+  const found = new Map();
+  let remaining = wanted;
+  let start = 0;
+  for (let calls = 0; remaining.length; calls += 1) {
+    if (calls >= 500) throw new Error('Organisation lookup safety limit reached before Jira reported the final page.');
+    const r = await invoke('getImportOrganizations', { names: remaining, start });
+    (r.organizations || []).forEach((o) => found.set(organisationKey(o.name), o));
+    remaining = remaining.filter((n) => !found.has(organisationKey(n)));
+    if (r.complete) break;
+    const nextStart = Number(r.nextStart);
+    if (remaining.length && (!Number.isFinite(nextStart) || nextStart <= start)) {
+      throw new Error('Jira organisation pagination stopped before the lookup was complete.');
+    }
+    start = nextStart;
+  }
+  return { found, missing: remaining };
+}
+
+// Finds existing organisations and creates only those a complete scan proved are missing.
+async function prepareOrganisations(names) {
+  const { found, missing } = await lookupOrganisations(names);
+  const created = [];
+  for (let i = 0; i < missing.length; i += 20) {
+    const r = await invoke('createImportOrganizations', { names: missing.slice(i, i + 20) });
+    created.push(...(r.created || []));
+  }
+  return { organizations: [...found.values(), ...created], created };
+}
+
+// Finds or creates every organisation the rows name, then returns the rows with organizationIds attached.
+async function attachOrganisationIds(rows) {
+  const prepared = await prepareOrganisations(rows.map((r) => r.organisation));
+  const idByKey = new Map(prepared.organizations.map((o) => [organisationKey(o.name), o.id]));
+  return {
+    rows: rows.map((r) => {
+      const key = organisationKey(r.organisation);
+      return { ...r, organizationIds: idByKey.has(key) ? [idByKey.get(key)] : [] };
+    }),
+    created: prepared.created
+  };
+}
+
 function invalidRowMap(validationResult) {
   const invalidRows = new Map();
   (validationResult?.errors || []).forEach((e) => {
@@ -172,13 +223,8 @@ function App() {
     setPreviewing(true); setError('');
     try {
       const serviceDeskId = await ensureDeskId();
-      let currentOrgs = orgs;
-      if (!currentOrgs.length) {
-        const r = await invoke('getOrganizations');
-        currentOrgs = r.values || [];
-        setOrgs(currentOrgs);
-      }
-      const orgNames = new Set(currentOrgs.map((o) => String(o.name || '').toLowerCase()));
+      const { found: existingOrgs } = await lookupOrganisations(parsed.map((row) => row.organisation));
+      const orgNames = new Set(existingOrgs.keys());
       const invalidRows = invalidRowMap(validationResult);
       const results = parsed.map((row, i) => invalidRows.has(i)
         ? { ...row, rowNumber: i + 2, action: 'ERROR', reason: invalidRows.get(i).join('; ') }
@@ -192,7 +238,7 @@ function App() {
         try {
           const found = await invoke('getCustomers', { serviceDeskId, query: String(row.email || '').trim() });
           const exact = (found.values || []).find((c) => String(c.emailAddress || '').toLowerCase() === String(row.email || '').trim().toLowerCase());
-          const orgNote = row.organisation && !orgNames.has(String(row.organisation).toLowerCase())
+          const orgNote = row.organisation && !orgNames.has(organisationKey(row.organisation))
             ? `Organisation “${row.organisation}” will be created.` : '';
           results[i] = !exact
             ? { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' }
@@ -281,16 +327,9 @@ function App() {
       if (!row) throw new Error(`Saved recovery row ${rowNumber} is not present in this CSV.`);
       return { ...row, rowNumber };
     });
-    const names = [...new Set(recoveryRows.map((r) => r.organisation).filter(Boolean))];
-    const prepared = await invoke('prepareImportOrganizations', { names });
-    const allOrgs = [...orgs, ...(prepared.organizations || [])];
-    const orgMap = new Map(allOrgs.map((o) => [String(o.name).toLowerCase(), o.id]));
-    const mapped = recoveryRows.map((r) => ({
-      ...r,
-      organizationIds: r.organisation && orgMap.has(r.organisation.toLowerCase()) ? [orgMap.get(r.organisation.toLowerCase())] : []
-    }));
+    // Recovery discovery must not change Jira: organisations are resolved (and created) only when Resume is clicked.
     const chunks = [];
-    for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
+    for (let i = 0; i < recoveryRows.length; i += 100) chunks.push(recoveryRows.slice(i, i + 100));
     if (chunks.length !== Number(session.totalBatches)) throw new Error('Saved recovery batch count does not match this CSV. Resume has been blocked.');
 
     const completed = new Set((session.batches || []).map((b) => Number(b.batchNumber)));
@@ -298,12 +337,12 @@ function App() {
     while (nextBatchIndex < chunks.length && completed.has(nextBatchIndex + 1)) nextBatchIndex += 1;
     if (nextBatchIndex >= chunks.length) return;
     const tasks = (session.batches || []).filter((b) => Number(b.batchNumber) <= nextBatchIndex).map((b) => ({ ...b, submittedRows: Number(b.count || 0) }));
-    const plan = { sessionId: session.id, totalRows: mapped.length, chunks, nextBatchIndex, tasks, recovered: true };
+    const plan = { sessionId: session.id, totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, recovered: true, organisationsPending: true };
     setResumePlan(plan);
     setImportProgress({
       state: 'recovered',
       sessionId: session.id,
-      totalRows: mapped.length,
+      totalRows: recoveryRows.length,
       totalBatches: chunks.length,
       completedBatches: nextBatchIndex,
       completedRows: Number(session.submittedRows || 0),
@@ -431,14 +470,7 @@ function App() {
 
       setImportProgress({ state: 'preparing', totalRows: actionable.length, totalBatches: Math.ceil(actionable.length / 100), completedBatches: 0, completedRows: 0 });
       const serviceDeskId = await ensureDeskId();
-      const names = [...new Set(actionable.map((r) => r.organisation).filter(Boolean))];
-      const prepared = await invoke('prepareImportOrganizations', { names });
-      const allOrgs = [...orgs, ...(prepared.organizations || [])];
-      const orgMap = new Map(allOrgs.map((o) => [String(o.name).toLowerCase(), o.id]));
-      const mapped = actionable.map((r) => ({
-        ...r,
-        organizationIds: r.organisation && orgMap.has(r.organisation.toLowerCase()) ? [orgMap.get(r.organisation.toLowerCase())] : []
-      }));
+      const { rows: mapped, created } = await attachOrganisationIds(actionable);
       const chunks = [];
       for (let i = 0; i < mapped.length; i += 100) chunks.push(mapped.slice(i, i + 100));
       const sessionId = makeSessionId();
@@ -458,7 +490,7 @@ function App() {
       setImportStatus({
         submitted: mapped.length,
         tasks,
-        createdOrganizations: (prepared.created || []).length,
+        createdOrganizations: created.length,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
         sessionId: plan.sessionId
@@ -471,14 +503,26 @@ function App() {
     if (!resumePlan) return;
     setLoading(true); setError('');
     try {
-      const tasks = await submitPlan(resumePlan, resumePlan.nextBatchIndex, resumePlan.tasks || []);
+      let plan = resumePlan;
+      let createdOrganizations = 0;
+      if (plan.organisationsPending) {
+        // Only the batches still to submit need organisation ids; completed batches are left untouched.
+        const remaining = plan.chunks.slice(plan.nextBatchIndex);
+        const { rows: mapped, created } = await attachOrganisationIds(remaining.flat());
+        const remapped = [];
+        let offset = 0;
+        for (const chunk of remaining) { remapped.push(mapped.slice(offset, offset + chunk.length)); offset += chunk.length; }
+        plan = { ...plan, chunks: [...plan.chunks.slice(0, plan.nextBatchIndex), ...remapped], organisationsPending: false };
+        createdOrganizations = created.length;
+      }
+      const tasks = await submitPlan(plan, plan.nextBatchIndex, plan.tasks || []);
       setImportStatus({
-        submitted: resumePlan.totalRows,
+        submitted: plan.totalRows,
         tasks,
-        createdOrganizations: 0,
+        createdOrganizations,
         skipped: preview.filter((r) => r.action === 'SKIP').length,
         excludedErrors: preview.filter((r) => r.action === 'ERROR').length,
-        sessionId: resumePlan.sessionId,
+        sessionId: plan.sessionId,
         resumed: true
       });
     } catch (e) { setError(e.message); }
