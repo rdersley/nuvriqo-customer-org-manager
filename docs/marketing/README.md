@@ -1,6 +1,6 @@
 # Marketplace images
 
-All images are 1840×900 PNG, taken from the real app with fictional demo data. To regenerate them, see `qa/marketing/README.md`.
+Highlights and screenshots are 1840×900 PNG. Each highlight also has a 580×330 cropped version (`*-580x330.png`) for the Marketplace highlight crop. All are taken from the real app with fictional demo data. To regenerate them, see `qa/marketing/README.md`.
 
 Limits: highlight title ≤ 50 characters, highlight summary ≤ 220, screenshot caption ≤ 220.
 
