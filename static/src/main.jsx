@@ -7,6 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
+import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 
 // Injected by vite.config.js from the root package.json.
@@ -82,6 +83,9 @@ function App() {
   const [savedMappings, setSavedMappings] = useState([]);
   const [mappingName, setMappingName] = useState('');
   const [mappingMessage, setMappingMessage] = useState(null);
+  // Large imports are confirmed first (static/src/safeguards.js).
+  const [confirmingImport, setConfirmingImport] = useState(false);
+  const [typedConfirmation, setTypedConfirmation] = useState('');
   const [fileFingerprint, setFileFingerprint] = useState('');
 
   useEffect(() => {
@@ -342,6 +346,8 @@ function App() {
     setResumePlan(null);
     setImportStatus(null);
     setAppliedMapping(chosen);
+    setConfirmingImport(false);
+    setTypedConfirmation('');
     const parsedRows = applyMapping(table, chosen);
     setRows(parsedRows);
     try {
@@ -581,6 +587,14 @@ function App() {
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
   const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
   // Plain numbers (no separators): the acceptance tests match this label exactly.
+  const impact = useMemo(() => importImpact(preview), [preview]);
+  const safeguard = useMemo(() => importSafeguard(impact), [impact]);
+  const deskName = serviceDesks.find((d) => String(d.id) === String(desk))?.projectName || 'the selected service project';
+  function startImport() {
+    if (safeguard.level === 'none') { runImport(); return; }
+    setTypedConfirmation('');
+    setConfirmingImport(true);
+  }
   const importButtonLabel = `Import ${changeCount} customer change${changeCount === 1 ? '' : 's'}${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR} error${previewSummary.ERROR === 1 ? '' : 's'})` : ''}`;
   const deskPicker = (tab === 'Customers' || tab === 'Import') && serviceDesks.length > 0
     ? <select className="nq-select" aria-label="Service project" value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>
@@ -694,8 +708,23 @@ function App() {
           {importProgress.state === 'failed' && <Notice kind="error">Batch {importProgress.currentBatch} failed after three attempts. Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</Notice>}
         </Card>}
 
+        {confirmingImport && !loading && <Notice kind="warning" title={`Check before importing ${plural(impact.changes, 'customer change')}`}>
+          <p>This is a large import ({safeguard.reasons.join(', ')}). It will change {deskName}:</p>
+          <ul>
+            {impact.create > 0 && <li>{plural(impact.create, 'new customer')} created and added to the project</li>}
+            {impact.update > 0 && <li>{plural(impact.update, 'existing customer')} renamed to the name in the file</li>}
+            {impact.newOrganisations.length > 0 && <li>{plural(impact.newOrganisations.length, 'organisation')} created: {impact.newOrganisations.slice(0, 10).join(', ')}{impact.newOrganisations.length > 10 ? `, and ${(impact.newOrganisations.length - 10).toLocaleString()} more` : ''}</li>}
+          </ul>
+          <p>Jira has no undo for this. Check the preview above first.</p>
+          {safeguard.level === 'typed' && <Field label={`Type ${impact.changes} to confirm`} htmlFor="import-confirm-count"><input id="import-confirm-count" className="nq-input" inputMode="numeric" autoComplete="off" value={typedConfirmation} onChange={(e) => setTypedConfirmation(e.target.value)}/></Field>}
+          <div className="nq-inline">
+            <Button appearance="primary" disabled={safeguard.level === 'typed' && !typedConfirmationMatches(typedConfirmation, impact.changes)} onClick={() => { setConfirmingImport(false); runImport(); }}>Yes, import {plural(impact.changes, 'change')}</Button>
+            <Button onClick={() => setConfirmingImport(false)}>Cancel</Button>
+          </div>
+        </Notice>}
+
         {(rows.length > 0 || resumePlan) && <div className="nq-inline">
-          {rows.length > 0 && !resumePlan && <Button appearance="primary" disabled={readOnly || loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : importButtonLabel}</Button>}
+          {rows.length > 0 && !resumePlan && <Button appearance="primary" disabled={readOnly || loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0) || confirmingImport} onClick={startImport}>{loading ? 'Submitting…' : importButtonLabel}</Button>}
           {resumePlan && <Button appearance="primary" disabled={readOnly || loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</Button>}
         </div>}
 
