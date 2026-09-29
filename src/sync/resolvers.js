@@ -4,7 +4,7 @@ import { kvs } from '@forge/kvs';
 import { normaliseConfig, inScope } from './rules.js';
 import {
   SYNC_CONFIG_KEY, SYNC_HEALTH_KEY, detectFields, getConfig, toSyncIssue, fetchSyncIssue,
-  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage
+  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage, projectOrganisationGaps
 } from './jira.js';
 
 const SCAN_BUDGET_MS = 15000;
@@ -30,7 +30,8 @@ export function registerSyncResolvers(secureDefine) {
     });
     const saved = { ...config, updatedAt: new Date().toISOString() };
     await kvs.set(SYNC_CONFIG_KEY, saved);
-    return saved;
+    const warnings = saved.mappings.length ? await projectOrganisationGaps(api.asUser(), saved) : [];
+    return { ...saved, warnings };
   }, { write: true });
 
   // Client values Jira suggests for the field (JQL autocomplete), to help fill the mapping table.

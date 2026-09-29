@@ -23,7 +23,13 @@ export async function handleIssueEvent(event, context) {
 
   const result = evaluateIssue(issue, config);
   if (result.status === 'needs-change') {
-    await setOrganisations(jira, issue.id, config, result.target);
+    try {
+      await setOrganisations(jira, issue.id, config, result.target);
+    } catch (error) {
+      // Most often the mapped organisation isn't added to the ticket's service project. Log it so admins see it.
+      await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.target, source: 'failed', error: String(error.message).slice(0, 300) });
+      return { status: 'failed', issueKey: issue.key };
+    }
     await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.target, source: isUpdate ? 'client-changed' : 'created' });
   } else if (result.status === 'missing-mapping') {
     await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.current, source: 'missing-mapping' });

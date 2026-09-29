@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Button, Notice, EmptyState, Loading, Lozenge, Field } from '@nuvriqo/ui/react';
 import { organisationKey } from './organisations.js';
 
-const sourceLabel = { 'client-changed': ['Client changed', 'info'], created: ['New ticket', 'success'], backfill: ['Bulk correction', 'discovery'], 'missing-mapping': ['No mapping', 'warning'] };
+const sourceLabel = { 'client-changed': ['Client changed', 'info'], created: ['New ticket', 'success'], backfill: ['Bulk correction', 'discovery'], 'missing-mapping': ['No mapping', 'warning'], failed: ['Failed', 'danger'] };
 const CORRECT_CHUNK = 25;
 
 /**
@@ -73,8 +73,12 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
     setSaving(true);
     try {
       const saved = await invoke('saveSyncConfig', { ...draft, mappings });
-      setSetup((s) => ({ ...s, config: saved }));
-      setMessage({ kind: 'success', text: saved.enabled ? 'Settings saved. Sync is on.' : 'Settings saved. Sync is off.' });
+      const { warnings = [], ...config } = saved;
+      setSetup((s) => ({ ...s, config }));
+      const state = config.enabled ? 'Settings saved. Sync is on.' : 'Settings saved. Sync is off.';
+      setMessage(warnings.length
+        ? { kind: 'warning', title: `${state} Some organisations aren't added to the selected projects`, text: `${warnings.map((w) => `${w.projectKey}: ${w.organisations.join(', ')}`).join('; ')}. Jira only lets an organisation be set on a ticket once it's added to that service project, so sync will fail for these clients until they're added (Project settings → Customers).` }
+        : { kind: 'success', text: state });
     } catch (e) { setMessage({ kind: 'error', title: "Couldn't save the settings", text: e.message }); }
     finally { setSaving(false); }
   }
@@ -140,8 +144,8 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
               {fields.clientCandidates.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.type === 'select' ? 'select list' : 'text'})</option>)}
             </select>
           </Field>
-          <Field label="Organizations field" help="Found automatically.">
-            <input className="nq-input" readOnly value={fields.organisationsField ? fields.organisationsField.name : 'Not found'} aria-label="Organizations field"/>
+          <Field label="Organizations field" htmlFor="sync-org-field" help="Found automatically.">
+            <input id="sync-org-field" className="nq-input" readOnly value={fields.organisationsField ? fields.organisationsField.name : 'Not found'}/>
           </Field>
         </div>
         <Field label="Projects" help="Sync only runs on tickets in these service projects.">
@@ -215,10 +219,10 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
       </div>
     </Card>
 
-    <Card title="Recent corrections" description="Changes made by the app in the last 90 days, newest first." actions={<Button appearance="subtle" onClick={() => invoke('getSyncLog').then(setLog)}>Refresh</Button>}>
+    <Card title="Recent corrections" description="Changes made by the app in the last 90 days, newest first." actions={<Button appearance="subtle" onClick={() => { loadOrgs(); invoke('getSyncLog').then(setLog); }}>Refresh</Button>}>
       {log.length ? <div className="nq-table-wrap"><table className="nq-table">
         <thead><tr><th>When</th><th>Ticket</th><th>Client</th><th>From</th><th>To</th><th>Why</th></tr></thead>
-        <tbody>{log.map((e) => { const [label, kind] = sourceLabel[e.source] || [e.source, 'neutral']; return <tr key={`${e.at}-${e.issueKey}`}><td>{new Date(e.at).toLocaleString()}</td><td>{e.issueKey}</td><td>{e.clientValue}</td><td>{orgNames(e.from)}</td><td>{e.source === 'missing-mapping' ? '—' : orgNames(e.to)}</td><td><Lozenge kind={kind}>{label}</Lozenge></td></tr>; })}</tbody>
+        <tbody>{log.map((e) => { const [label, kind] = sourceLabel[e.source] || [e.source, 'neutral']; return <tr key={`${e.at}-${e.issueKey}`}><td>{new Date(e.at).toLocaleString()}</td><td>{e.issueKey}</td><td>{e.clientValue}</td><td>{orgNames(e.from)}</td><td>{e.source === 'missing-mapping' ? '—' : orgNames(e.to)}</td><td><Lozenge kind={kind}>{label}</Lozenge>{e.error && <div className="nq-help">{e.error}</div>}</td></tr>; })}</tbody>
       </table></div> : <EmptyState title="No corrections yet" compact>When sync corrects a ticket, it's listed here.</EmptyState>}
     </Card>
   </>;

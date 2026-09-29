@@ -140,3 +140,22 @@ test('the correction log does not store names or emails', async () => {
   const entry = [...store.entries()].find(([k]) => k.startsWith('sync-log:'))[1];
   assert.deepEqual(Object.keys(entry).sort(), ['at', 'clientValue', 'from', 'issueKey', 'source', 'to']);
 });
+
+test('saving warns about mapped organisations that are not added to a selected project', async () => {
+  site.projectOrgs.set('SD', ['10', '20']);
+  const saved = await call('saveSyncConfig', settings());
+  assert.deepEqual(saved.warnings, [{ projectKey: 'SD', organisations: ['Lauda'] }]);
+  site.projectOrgs.set('SD', ['10', '20', '30']);
+  assert.deepEqual((await call('saveSyncConfig', settings())).warnings, []);
+});
+
+test('when Jira rejects the change (org not in the project) the event logs a failure and changes nothing', async () => {
+  site.projectOrgs.set('SD', ['10', '20']);
+  addIssue({ id: 40, key: 'SD-40', client: 'LDA', orgIds: ['10'] });
+  const result = await handleIssueEvent(updated(40), {});
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(orgIdsOf(40), ['10']);
+  const entry = (await call('getSyncLog', {})).find((e) => e.issueKey === 'SD-40');
+  assert.equal(entry.source, 'failed');
+  assert.match(entry.error, /Invalid organization ids/);
+});

@@ -117,3 +117,28 @@ export async function searchPage(jira, config, nextPageToken) {
     body: JSON.stringify(body)
   }), 'Searching tickets');
 }
+
+// Jira only accepts an organisation on a ticket if it has been added to the ticket's service project.
+// Returns, per selected project, the mapped organisations that aren't added to it. The app doesn't add
+// them itself: adding an organisation lets its customers raise requests in that project.
+export async function projectOrganisationGaps(jira, config) {
+  const headers = { Accept: 'application/json', 'X-ExperimentalApi': 'opt-in' };
+  const desks = await json(await jira.requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`, { headers }), 'Listing service projects');
+  const gaps = [];
+  for (const projectKey of config.projectKeys || []) {
+    const desk = (desks?.values || []).find((d) => d.projectKey === projectKey);
+    if (!desk) continue;
+    const added = new Set();
+    let start = 0;
+    for (let page = 0; page < 40; page += 1) {
+      const body = await json(await jira.requestJira(route`/rest/servicedeskapi/servicedesk/${desk.id}/organization?start=${start}&limit=50`, { headers }), `Listing organisations in ${projectKey}`);
+      const values = body?.values || [];
+      values.forEach((o) => added.add(String(o.id)));
+      if (body?.isLastPage || !values.length) break;
+      start += 50;
+    }
+    const missing = (config.mappings || []).filter((m) => !added.has(String(m.organizationId)));
+    if (missing.length) gaps.push({ projectKey, organisations: [...new Set(missing.map((m) => m.organizationName || `#${m.organizationId}`))] });
+  }
+  return gaps;
+}

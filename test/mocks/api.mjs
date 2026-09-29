@@ -1,7 +1,7 @@
 // A fake Jira site. `site.organizations` backs the JSM organisation endpoints; `site.issues` and
 // `site.fields` back the issue, field and JQL search endpoints used by Client → Organisation sync.
 // Every request is logged with who made it (`user` for asUser, `app` for asApp).
-export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set() };
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map() };
 
 export const CLIENT_FIELD = 'customfield_10050';
 export const ORG_FIELD = 'customfield_10002';
@@ -14,6 +14,9 @@ export function resetSite(count = 0) {
   site.isAdmin = true;
   site.issues = new Map();
   site.failIssueIds = new Set();
+  // Service projects, and the organisations added to each (Jira only accepts those on a ticket).
+  site.serviceDesks = [{ id: '1', projectKey: 'SD', projectName: 'Service desk' }, { id: '2', projectKey: 'OPS', projectName: 'Operations' }];
+  site.projectOrgs = new Map();
   site.fields = [
     { id: 'summary', name: 'Summary', custom: false, schema: { system: 'summary' } },
     { id: CLIENT_FIELD, name: 'Client', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select' } },
@@ -78,9 +81,20 @@ async function requestJira(as, path, options = {}) {
     if (method === 'PUT') {
       if (site.failIssueIds.has(issue.id)) return json({ errorMessages: ['You do not have permission to edit issues in this project.'] }, 403);
       const { fields } = JSON.parse(options.body);
+      const allowed = site.projectOrgs.get(issue.fields.project.key);
+      if (fields[ORG_FIELD] && allowed && fields[ORG_FIELD].some((id) => !allowed.includes(String(id)))) {
+        return json({ errorMessages: ['Invalid organization ids specified.'], errors: { [ORG_FIELD]: 'Specify a valid value for Organizations ID' } }, 400);
+      }
       if (fields[ORG_FIELD]) issue.fields[ORG_FIELD] = fields[ORG_FIELD].map((id) => ({ id, name: `Org ${id}` }));
       return { ok: true, status: 204, text: async () => '' };
     }
+  }
+  if (path.startsWith('/rest/servicedeskapi/servicedesk?')) return json({ values: site.serviceDesks, isLastPage: true });
+  const deskOrgs = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/]+)\/organization\?/);
+  if (deskOrgs) {
+    const desk = site.serviceDesks.find((d) => d.id === deskOrgs[1]);
+    const ids = site.projectOrgs.get(desk?.projectKey) || [];
+    return json({ values: ids.map((id) => ({ id, name: 'Org ' + id })), isLastPage: true });
   }
   if (path.startsWith('/rest/servicedeskapi/organization') && method === 'POST') {
     const { name } = JSON.parse(options.body);
