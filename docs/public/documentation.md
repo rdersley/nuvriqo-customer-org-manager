@@ -85,10 +85,22 @@ The Client field is the source of truth. When a ticket is created, or its Client
 - Organisations that aren't in any mapping are **left alone**, so anything added by hand stays.
 - If the Client is empty, or its value has no mapping, nothing changes. Unmapped values are listed so you can add them.
 
+### One client, several organisations
+
+If one client is split across several organisations (for example by site or region), choose a **Second field (optional)**. Then a mapping row can say *Client* **and** *second value* → organisation:
+
+| Client | Second field | Organisation |
+|---|---|---|
+| RYR | Dublin | Ryanair Dublin |
+| RYR | London | Ryanair London |
+| RYR | *(empty)* | Ryanair |
+
+The most specific row wins. A row without a second value is the client's default, used when the second field is empty or has a value with no row of its own. Changing either field updates the Organizations field. If there's no matching row and no default, the ticket is listed under **Client values with no mapping**.
+
 ### Set it up
 
 1. Open the **Organisation sync** tab.
-2. Choose the **Client field**: a single-select or text custom field. The Organizations field is found automatically.
+2. Choose the **Client field**: a single-select or text custom field. The Organizations field is found automatically. If you need it, choose a **Second field** too (see below).
 3. Tick the **projects** sync should run in.
 4. Add a row in **Client mappings** for each Client value and its organisation. Suggestions come from the values your tickets use.
 5. Tick **Sync is on**, then **Save settings**.
