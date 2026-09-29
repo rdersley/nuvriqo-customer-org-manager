@@ -5,7 +5,8 @@ import { handler } from '../src/index.js';
 import { lookupOrganisations, prepareOrganisations, attachOrganisationIds, loadAllOrganisations, organisationNote } from '../static/src/organisations.js';
 
 // Calls resolvers the way @forge/bridge does, so the UI helpers run against the real backend code.
-const invoke = (name, payload) => handler[name]({ payload });
+// A development context: licensing is tested separately in licensing-and-storage.test.mjs.
+const invoke = (name, payload) => handler[name]({ payload, context: { environmentType: 'DEVELOPMENT' } });
 const pageRequests = () => site.requests.filter((r) => r.method === 'GET' && r.path.startsWith('/rest/servicedeskapi/organization?')).length;
 const created = () => site.requests.filter((r) => r.method === 'POST').length;
 

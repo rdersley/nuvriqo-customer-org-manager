@@ -97,6 +97,9 @@ function App() {
   const [orgQuery, setOrgQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // null until known; the app is read-only when the site has no active licence (see src/license.js).
+  const [appStatus, setAppStatus] = useState(null);
+  const readOnly = appStatus?.licensed === false;
   const [rows, setRows] = useState([]);
   const [validation, setValidation] = useState(null);
   const [preview, setPreview] = useState([]);
@@ -118,6 +121,7 @@ function App() {
         if (r.values?.[0]) setDesk(String(r.values[0].id));
       } catch (e) { setError(e.message); }
     })();
+    invoke('getAppStatus').then(setAppStatus).catch(() => {});
   }, []);
 
   useEffect(() => { if (tab === 'Organisations') loadOrgs(); }, [tab]);
@@ -268,9 +272,7 @@ function App() {
 
   async function restoreRecoveryForFile(parsedRows, fingerprint) {
     const serviceDeskId = await ensureDeskId();
-    const sessions = await invoke('getImportSessions');
-    setImportSessions(sessions || []);
-    const session = (sessions || []).find((s) => s.fingerprint === fingerprint && String(s.serviceDeskId) === serviceDeskId && s.status !== 'SUBMITTED');
+    const session = await invoke('findRecoverableImportSession', { fingerprint, serviceDeskId });
     if (!session) return;
 
     const rowNumbers = Array.isArray(session.actionableRowNumbers) ? session.actionableRowNumbers.map(Number) : [];
@@ -514,6 +516,7 @@ function App() {
     <AppHeader product="Customer & Organisation Manager" subtitle="Bulk customer and organisation administration for Jira Service Management." version={APP_VERSION} actions={deskPicker}/>
     <Tabs items={tabs.map((t) => ({ id: t, label: t }))} active={tab} onChange={setTab}/>
     <div className="nq-stack">
+      {readOnly && <Notice kind="warning" title="Read-only: no active licence">This site doesn't have an active licence for Customer & Organisation Manager. You can still browse customers and organisations and preview imports, but importing is turned off. A Jira administrator can start a trial or renew from Manage apps.</Notice>}
       {error && <Notice kind="error">{error}</Notice>}
 
       {tab === 'Customers' && <Card title="Customers" description="Customers of the selected service project.">
@@ -586,8 +589,8 @@ function App() {
         </Card>}
 
         {(rows.length > 0 || resumePlan) && <div className="nq-inline">
-          {rows.length > 0 && !resumePlan && <Button appearance="primary" disabled={loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : importButtonLabel}</Button>}
-          {resumePlan && <Button appearance="primary" disabled={loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</Button>}
+          {rows.length > 0 && !resumePlan && <Button appearance="primary" disabled={readOnly || loading || previewing || previewSummary.PENDING > 0 || (previewSummary.CREATE + previewSummary.UPDATE === 0)} onClick={runImport}>{loading ? 'Submitting…' : importButtonLabel}</Button>}
+          {resumePlan && <Button appearance="primary" disabled={readOnly || loading} onClick={resumeImport}>{loading ? 'Resuming…' : `Resume saved import from batch ${resumePlan.nextBatchIndex + 1}`}</Button>}
         </div>}
 
         {importStatus && <Notice kind="success" title={importStatus.resumed ? 'Import resumed' : 'Import submitted'}>Submitted {plural(importStatus.submitted, 'customer change')} in {plural(importStatus.tasks.length, 'bulk task')}. Skipped {plural(importStatus.skipped, 'unchanged row')}. Excluded {plural(importStatus.excludedErrors, 'error row')}. Created {plural(importStatus.createdOrganizations, 'missing organisation')}. Import session: {importStatus.sessionId}.</Notice>}
