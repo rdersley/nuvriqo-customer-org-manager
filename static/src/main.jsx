@@ -7,52 +7,11 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
+import { parseCsvTable, guessMapping, missingMappingFields, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
 const tabs = ['Customers', 'Organisations', 'Import', 'Import History', 'Organisation sync'];
-
-function parseCsv(text) {
-  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return { rows: [], headers: [], missingHeaders: ['Email', 'Full Name/Display Name'] };
-
-  const parseLine = (line) => {
-    const out = [];
-    let cur = '';
-    let q = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        if (q && line[i + 1] === '"') { cur += '"'; i++; }
-        else q = !q;
-      } else if (c === ',' && !q) {
-        out.push(cur.trim());
-        cur = '';
-      } else cur += c;
-    }
-    out.push(cur.trim());
-    return out;
-  };
-
-  const rawHeaders = parseLine(lines[0]);
-  const headers = rawHeaders.map((h) => h.toLowerCase().replace(/\s+/g, ''));
-  const missingHeaders = [];
-  if (!headers.some((h) => h === 'email' || h === 'emailaddress')) missingHeaders.push('Email');
-  if (!headers.some((h) => h === 'displayname' || h === 'fullname' || h === 'name')) missingHeaders.push('Full Name/Display Name');
-
-  const rows = lines.slice(1).map((line) => {
-    const cols = parseLine(line);
-    const obj = {};
-    headers.forEach((h, i) => { obj[h] = cols[i] || ''; });
-    return {
-      email: obj.email || obj.emailaddress || '',
-      displayName: obj.displayname || obj.fullname || obj.name || '',
-      organisation: obj.organisation || obj.organization || ''
-    };
-  });
-
-  return { rows, headers: rawHeaders, missingHeaders };
-}
 
 function validateRowsLocally(rows) {
   const seen = new Set();
@@ -115,6 +74,14 @@ function App() {
   const [history, setHistory] = useState([]);
   const [importSessions, setImportSessions] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
+  // Column mapping: the parsed file, the columns chosen for each field, and the mapping the preview used.
+  const [csvTable, setCsvTable] = useState(null);
+  const [mapping, setMapping] = useState(null);
+  const [appliedMapping, setAppliedMapping] = useState(null);
+  const [mappingSource, setMappingSource] = useState('');
+  const [savedMappings, setSavedMappings] = useState([]);
+  const [mappingName, setMappingName] = useState('');
+  const [mappingMessage, setMappingMessage] = useState(null);
   const [fileFingerprint, setFileFingerprint] = useState('');
 
   useEffect(() => {
@@ -274,10 +241,12 @@ function App() {
     }
   }
 
-  async function restoreRecoveryForFile(parsedRows, fingerprint) {
-    const serviceDeskId = await ensureDeskId();
-    const session = await invoke('findRecoverableImportSession', { fingerprint, serviceDeskId });
+  async function restoreRecoveryForFile(parsedRows, session, usedMapping) {
     if (!session) return;
+    if (session.mapping && !sameMapping(fromSaved(session.mapping), usedMapping)) {
+      const m = fromSaved(session.mapping);
+      throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${m.displayName}${m.organisation ? `, Organisation: ${m.organisation}` : ''}). Choose those columns to resume it.`);
+    }
 
     const rowNumbers = Array.isArray(session.actionableRowNumbers) ? session.actionableRowNumbers.map(Number) : [];
     if (!rowNumbers.length || Number(session.totalRows) !== rowNumbers.length) {
@@ -322,35 +291,96 @@ function App() {
     setComparisonProgress(null);
     setImportProgress(null);
     setResumePlan(null);
+    setImportStatus(null);
+    setRows([]);
+    setPreview([]);
+    setValidation(null);
+    setAppliedMapping(null);
+    setMappingMessage(null);
     const fileText = await f.text();
     const fingerprint = await sha256Hex(fileText);
     setFileFingerprint(fingerprint);
-    const parsed = parseCsv(fileText);
-    setCsvInfo({ fileName: f.name, headers: parsed.headers, missingHeaders: parsed.missingHeaders });
-    setRows(parsed.rows);
-    setImportStatus(null);
+    const table = parseCsvTable(fileText);
+    setCsvTable(table);
+    setCsvInfo({ fileName: f.name, headers: table.headers });
 
-    if (parsed.missingHeaders.length) {
-      const reason = `Required CSV column missing: ${parsed.missingHeaders.join(', ')}`;
-      setValidation({ valid: 0, errors: parsed.rows.map((_, i) => ({ row: i + 2, message: reason })) });
-      setPreview(parsed.rows.map((r, i) => ({ ...r, rowNumber: i + 2, action: 'ERROR', reason })));
-      return;
-    }
-
+    // Columns: an interrupted import's own mapping, else a saved mapping that fits, else a guess.
+    let chosen = null;
+    let source = '';
+    let session = null;
     try {
-      if (parsed.rows.length > 500) {
-        const result = validateRowsLocally(parsed.rows);
-        setValidation(result);
-        await buildLargePreview(parsed.rows, result);
+      const serviceDeskId = await ensureDeskId();
+      const [saved, recoverable] = await Promise.all([
+        invoke('getImportMappings').catch(() => []),
+        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId })
+      ]);
+      session = recoverable;
+      setSavedMappings(saved || []);
+      if (session?.mapping && !missingMappingFields(fromSaved(session.mapping), table.headers).length) {
+        chosen = fromSaved(session.mapping);
+        source = 'The columns from the interrupted import of this file.';
       } else {
-        const result = await invoke('validateImport', { rows: parsed.rows });
-        setValidation(result);
-        await buildPreview(parsed.rows, result);
+        const match = pickSavedMapping(saved, table.headers, serviceDeskId);
+        if (match) { chosen = fromSaved(match); source = `Using the saved mapping "${match.name}".`; }
       }
-      await restoreRecoveryForFile(parsed.rows, fingerprint);
+    } catch (err) {
+      setError(`Recovery check failed: ${err.message}`);
+    }
+    if (!chosen) {
+      chosen = guessMapping(table.headers);
+      source = missingMappingFields(chosen, table.headers).length ? '' : 'Matched automatically from the column names.';
+    }
+    setMapping(chosen);
+    setMappingSource(source);
+    if (!missingMappingFields(chosen, table.headers).length) await previewWith(table, chosen, session);
+  }
+
+  async function previewWith(table, chosen, session) {
+    setError('');
+    setComparisonProgress(null);
+    setImportProgress(null);
+    setResumePlan(null);
+    setImportStatus(null);
+    setAppliedMapping(chosen);
+    const parsedRows = applyMapping(table, chosen);
+    setRows(parsedRows);
+    try {
+      if (parsedRows.length > 500) {
+        const result = validateRowsLocally(parsedRows);
+        setValidation(result);
+        await buildLargePreview(parsedRows, result);
+      } else {
+        const result = await invoke('validateImport', { rows: parsedRows });
+        setValidation(result);
+        await buildPreview(parsedRows, result);
+      }
+      await restoreRecoveryForFile(parsedRows, session, chosen);
     } catch (err) {
       setError(`CSV validation or recovery check failed: ${err.message}`);
     }
+  }
+
+  async function previewWithCurrentMapping() {
+    let session = null;
+    try { session = await invoke('findRecoverableImportSession', { fingerprint: fileFingerprint, serviceDeskId: await ensureDeskId() }); } catch { session = null; }
+    await previewWith(csvTable, mapping, session);
+  }
+
+  async function saveMapping() {
+    setMappingMessage(null);
+    try {
+      const existing = savedMappings.find((m) => m.name.trim().toLowerCase() === mappingName.trim().toLowerCase());
+      const saved = await invoke('saveImportMapping', { id: existing?.id, name: mappingName, serviceDeskId: await ensureDeskId(), ...toSaved(mapping) });
+      setSavedMappings((list) => [saved, ...list.filter((m) => m.id !== saved.id)]);
+      setMappingMessage({ kind: 'success', text: `Mapping "${saved.name}" saved.` });
+    } catch (e) { setMappingMessage({ kind: 'error', text: e.message }); }
+  }
+
+  async function deleteMapping(id) {
+    try {
+      await invoke('deleteImportMapping', { id });
+      setSavedMappings((list) => list.filter((m) => m.id !== id));
+    } catch (e) { setMappingMessage({ kind: 'error', text: e.message }); }
   }
 
   async function submitBatchWithRetry(plan, batchIndex, existingTasks) {
@@ -479,6 +509,7 @@ function App() {
         fingerprint: fileFingerprint,
         serviceDeskId,
         fileName: csvInfo?.fileName || '',
+        mapping: toSaved(appliedMapping),
         actionableRowNumbers: mapped.map((r) => r.rowNumber),
         totalRows: mapped.length,
         totalBatches: chunks.length,
@@ -588,13 +619,44 @@ function App() {
       </Card>}
 
       {tab === 'Import' && <>
-        <Card title="Import" description="Upload a CSV with Email, Full Name (or Display Name) and Organisation columns. The preview checks Jira before anything is changed.">
+        <Card title="Import" description="Upload a CSV with a header row. You choose which columns hold the email, full name and (optionally) organisation. The preview checks Jira before anything is changed.">
           <Field label="CSV file" htmlFor="csv-file"><input id="csv-file" className="nq-input" type="file" accept=".csv,text/csv" onChange={onFile}/></Field>
         </Card>
 
+        {csvTable && mapping && <Card title="Column mapping" description={mappingSource || 'Choose which column holds each field.'}>
+          <div className="nq-stack">
+            {!csvTable.headers.length && <Notice kind="error" title="This file has no header row">The first row must name the columns, for example Email, Full Name, Organisation.</Notice>}
+            {csvTable.headers.length > 0 && missingMappingFields(mapping, csvTable.headers).length > 0 && <Notice kind="warning" title="Choose the columns to import">Pick the column for {missingMappingFields(mapping, csvTable.headers).join(' and ')}. The preview starts once they're chosen.</Notice>}
+            {mappingMessage && <Notice kind={mappingMessage.kind}>{mappingMessage.text}</Notice>}
+            <div className="nq-grid nq-grid--3">
+              {MAPPING_FIELDS.map(({ key, label, required }) => {
+                const col = csvTable.headers.indexOf(mapping[key]);
+                const sample = col >= 0 ? (csvTable.records.find((r) => r[col]) || [])[col] : '';
+                return <Field key={key} label={label} required={required} htmlFor={`map-${key}`} help={sample ? `e.g. ${sample}` : (required ? 'Required' : 'Optional')}>
+                  <select id={`map-${key}`} className="nq-select" value={mapping[key] || ''} onChange={(e) => { setMapping((m) => ({ ...m, [key]: e.target.value })); setMappingSource(''); }}>
+                    <option value="">{required ? 'Choose a column…' : 'Not in this file'}</option>
+                    {csvTable.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </Field>;
+              })}
+            </div>
+            <div className="nq-spread">
+              <div className="nq-inline">
+                {savedMappings.length > 0 && <select className="nq-select" aria-label="Use a saved mapping" value="" onChange={(e) => { const m = savedMappings.find((x) => x.id === e.target.value); if (m) { setMapping(fromSaved(m)); setMappingSource(`Using the saved mapping "${m.name}".`); setMappingName(m.name); } }}>
+                  <option value="">Use a saved mapping…</option>
+                  {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={missingMappingFields(fromSaved(m), csvTable.headers).length > 0}>{m.name}{missingMappingFields(fromSaved(m), csvTable.headers).length ? ' (columns not in this file)' : ''}</option>)}
+                </select>}
+                <input className="nq-input" aria-label="Mapping name" placeholder="Name this mapping" value={mappingName} onChange={(e) => setMappingName(e.target.value)}/>
+                <Button disabled={readOnly || !mappingName.trim() || missingMappingFields(mapping, csvTable.headers).length > 0} onClick={saveMapping}>Save mapping</Button>
+                {savedMappings.some((m) => m.name === mappingName) && <Button appearance="subtle" onClick={() => deleteMapping(savedMappings.find((m) => m.name === mappingName).id)}>Delete saved mapping</Button>}
+              </div>
+              <Button appearance="primary" disabled={previewing || missingMappingFields(mapping, csvTable.headers).length > 0 || sameMapping(mapping, appliedMapping)} onClick={previewWithCurrentMapping}>{appliedMapping ? 'Preview again with these columns' : 'Preview with these columns'}</Button>
+            </div>
+          </div>
+        </Card>}
+
         {previewSummary.ERROR > 0 && <Notice kind="error" title={`${plural(previewSummary.ERROR, 'row')} will be excluded from this import`}>
-          {csvInfo?.missingHeaders?.length > 0 && <p><strong>CSV format problem:</strong> missing required column{csvInfo.missingHeaders.length > 1 ? 's' : ''} <strong>{csvInfo.missingHeaders.join(', ')}</strong>. Detected headers: {csvInfo.headers.length ? csvInfo.headers.join(', ') : 'none'}.</p>}
-          {csvInfo?.missingHeaders?.length === 0 && <p>The valid rows can continue. These rows won't be sent to Jira; correct them and import them separately later.</p>}
+          <p>The valid rows can continue. These rows won't be sent to Jira; correct them and import them separately later.</p>
           {errorReasons.slice(0, 5).map(([reason, count]) => <div key={reason}><strong>{plural(count, 'row')}:</strong> {reason}</div>)}
         </Notice>}
 

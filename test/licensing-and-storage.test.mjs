@@ -119,3 +119,11 @@ test('import records expire after 180 days; saved mappings do not', async () => 
   for (const key of importKeys) assert.deepEqual(setOptions.get(key), IMPORT_RECORD_RETENTION, key + ' should expire');
   assert.equal(setOptions.get('import-mapping:map1'), undefined, 'mappings are configuration and must not expire');
 });
+
+test('an import session keeps its column mapping for resume', async () => {
+  await call('startImportSession', { id: 'm1', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1, mapping: { emailHeader: 'Mail', displayNameHeader: 'Who', organisationHeader: '' } });
+  const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
+  assert.deepEqual(recovered.mapping, { emailHeader: 'Mail', displayNameHeader: 'Who', organisationHeader: '' });
+  await call('startImportSession', { id: 'm2', fingerprint: 'c'.repeat(64), serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 });
+  assert.equal(store.get('import-session:m2').mapping, null, 'sessions without a mapping store null');
+});

@@ -24,15 +24,24 @@ Lists every organisation on the site, loading in batches for large sites. Type i
 
 ### 1. Prepare the CSV
 
-The first row must be a header row with these columns (any order):
+The first row must be a header row. The columns can have any names and be in any order. You'll choose which one holds each field:
 
-| Column | Required | Notes |
+| Field | Required | Notes |
 |---|---|---|
-| `Email` | Yes | Must be a valid email address. Each email may appear only once. |
-| `Full Name` or `Display Name` | Yes | The customer's display name. |
-| `Organisation` | No | The organisation to add the customer to. It's created if it doesn't exist. |
+| Email | Yes | Must be a valid email address. Each email may appear only once. |
+| Full name | Yes | The customer's display name. |
+| Organisation | No | The organisation to add the customer to. It's created if it doesn't exist. |
 
-Save as UTF-8 CSV. Files of 16,000+ rows are supported.
+Save as UTF-8 CSV. Other columns are ignored. Quoted values may contain commas and line breaks. Files of 16,000+ rows are supported.
+
+### Choose the columns
+
+When you choose a file, the **Column mapping** card shows which column the app will use for each field, with a sample value from the file.
+
+- Common names like *Email*, *E-mail address*, *Full Name*, *Contact name*, *Organisation* or *Company* are matched automatically, and the preview starts straight away.
+- Otherwise, pick the columns and click **Preview with these columns**.
+- To reuse a layout (for example a monthly export from another system), type a name and click **Save mapping**. Next time you choose a file with those columns, the saved mapping is used automatically. You can also pick one from **Use a saved mapping**.
+- If you resume an interrupted import, the same columns are used again.
 
 ### 2. Preview
 

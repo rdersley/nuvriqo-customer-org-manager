@@ -342,6 +342,9 @@ secureDefine('startImportSession', async ({ payload }) => {
   const totalBatches = Math.max(1, Number(payload?.totalBatches || Math.ceil(actionableRowNumbers.length / 100) || 1));
   const skipped = Math.max(0, Number(payload?.skipped || 0));
   const excludedErrors = Math.max(0, Number(payload?.excludedErrors || 0));
+  // The CSV columns used for this import, so a resume reads the same columns.
+  const header = (v) => String(v || '').trim().slice(0, 255);
+  const mapping = payload?.mapping ? { emailHeader: header(payload.mapping.emailHeader), displayNameHeader: header(payload.mapping.displayNameHeader), organisationHeader: header(payload.mapping.organisationHeader) } : null;
 
   if (!id) throw new Error('Import session id is required');
   if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('A SHA-256 import fingerprint is required');
@@ -369,6 +372,7 @@ secureDefine('startImportSession', async ({ payload }) => {
     serviceDeskId,
     fileName,
     rowPlanChunks,
+    mapping,
     totalRows,
     totalBatches,
     skipped,
