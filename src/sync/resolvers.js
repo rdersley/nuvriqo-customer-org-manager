@@ -4,7 +4,7 @@ import { kvs } from '@forge/kvs';
 import { normaliseConfig, inScope } from './rules.js';
 import {
   SYNC_CONFIG_KEY, SYNC_HEALTH_KEY, detectFields, getConfig, toSyncIssue, fetchSyncIssue,
-  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage, projectOrganisationGaps, missingLabel
+  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage, projectOrganisationGaps, missingLabel, fieldOptions
 } from './jira.js';
 
 const SCAN_BUDGET_MS = 15000;
@@ -47,6 +47,15 @@ export function registerSyncResolvers(secureDefine) {
     if (!res.ok) return [];
     const body = await res.json();
     return (body?.results || []).map((r) => String(r.value ?? '').replace(/^"|"$/g, '')).filter(Boolean);
+  });
+
+  // All options of a select field in the chosen projects, for the mapping dropdowns.
+  secureDefine('getSyncFieldOptions', async ({ payload }) => {
+    const fieldId = String(payload?.fieldId || '');
+    if (!/^customfield_\d+$/.test(fieldId)) throw new Error('A field is required.');
+    const projectKeys = [...new Set((Array.isArray(payload?.projectKeys) ? payload.projectKeys : []).map((k) => String(k).trim().toUpperCase()).filter((k) => /^[A-Z][A-Z0-9_]{0,254}$/.test(k)))];
+    if (!projectKeys.length) return { found: false, options: [] };
+    return fieldOptions(api.asUser(), fieldId, projectKeys);
   });
 
   // Checks tickets in scope, one resumable chunk per call. Changes nothing.
