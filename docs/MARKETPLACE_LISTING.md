@@ -20,18 +20,17 @@ Import thousands of Jira Service Management customers from a CSV, see exactly wh
 
 ## More details (250–1000 characters)
 
-Customer & Organisation Manager gives Jira administrators one place to manage JSM customers and organisations, and a bulk importer built for real-world data.
+Customer & Organisation Manager gives Jira administrators one place to manage JSM customers and organisations, with a bulk importer built for real-world data.
 
 - Preview every row as Create, Update, Skip or Error before anything changes in Jira.
-- Import 16,000+ customers in controlled, retry-safe batches of 100.
-- Bad rows are excluded and listed with the reason; the valid rows still import.
-- Missing organisations are created automatically, only after the whole site has been checked, so existing ones are never duplicated.
-- Interrupted imports resume from the batch where they stopped, using the original row plan.
-- Search every customer and organisation, however many your site has.
-- Import history shows each import and the status of every Jira bulk task.
-- **Client → Organisation sync:** map a Client custom field to JSM organisations and the Organizations field is kept correct automatically, with no Jira Automation rules. A health check finds and fixes existing tickets.
+- Map any CSV columns, and save mappings for next time.
+- Import 16,000+ customers in retry-safe batches. They're added to the service project and their organisations.
+- Bad rows are left out with the reason; the rest still import.
+- Missing organisations are created only after the whole site has been checked, so none are duplicated.
+- Interrupted imports resume from where they stopped.
+- Client → Organisation sync keeps the JSM Organizations field in step with a Client field, with no Jira Automation rules.
 
-Runs entirely on Atlassian Forge and uses only the signed-in administrator's own Jira permissions.
+Runs entirely on Atlassian Forge, with no external services.
 
 ## Highlights and screenshots
 
