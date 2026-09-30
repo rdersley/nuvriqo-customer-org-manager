@@ -148,3 +148,36 @@ export async function projectOrganisationGaps(jira, config) {
   }
   return gaps;
 }
+
+// Every allowed value of a select field in the given projects, read from Jira's create-issue metadata
+// (read:jira-work; no extra scope). It follows each project's field context, so the list matches what
+// agents can pick there. Returns found: false when the field isn't on any create screen (e.g. a text field).
+export async function fieldOptions(jira, fieldId, projectKeys, { maxIssueTypes = 15 } = {}) {
+  const byKey = new Map();
+  let found = false;
+  const page = async (path, what) => {
+    const res = await jira.requestJira(path);
+    if (!res.ok) return null; // a project the admin can't create in is skipped, not fatal
+    return json(res, what);
+  };
+  for (const projectKey of (projectKeys || []).slice(0, 20)) {
+    const types = await page(route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes?maxResults=50`, `Reading issue types in ${projectKey}`);
+    for (const type of (types?.issueTypes || types?.values || []).slice(0, maxIssueTypes)) {
+      for (let startAt = 0; startAt < 1000; startAt += 200) {
+        const meta = await page(route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes/${type.id}?startAt=${startAt}&maxResults=200`, `Reading fields in ${projectKey}`);
+        const fields = meta?.fields || meta?.results || meta?.values || [];
+        const field = fields.find((f) => (f.fieldId || f.key) === fieldId);
+        if (field) {
+          found = true;
+          for (const v of field.allowedValues || []) {
+            const value = String(v?.value ?? '').trim();
+            if (value && !byKey.has(value.toLowerCase())) byKey.set(value.toLowerCase(), value);
+          }
+          break;
+        }
+        if (!meta || fields.length < 200 || startAt + fields.length >= Number(meta.total ?? 0)) break;
+      }
+    }
+  }
+  return { found, options: [...byKey.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) };
+}

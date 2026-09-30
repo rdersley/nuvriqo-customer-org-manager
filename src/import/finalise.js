@@ -3,6 +3,7 @@
 // happen. So after each batch's bulk task ends, the app looks up each customer's account id and adds them
 // to the selected service project and to their organisations with the standard JSM APIs.
 import api, { route } from '@forge/api';
+import { retrying } from '../http.js';
 import { kvs } from '@forge/kvs';
 
 export const FINALISE_MAX_ROWS = 100;
@@ -156,7 +157,7 @@ export function registerImportFinalise(secureDefine, { retention }) {
     if (!rows.length) throw new Error('No rows supplied');
     if (rows.length > FINALISE_MAX_ROWS) throw new Error(`Finalise at most ${FINALISE_MAX_ROWS} rows per request`);
 
-    const results = await finaliseRows(api.asUser(), { serviceDeskId, rows });
+    const results = await finaliseRows(retrying(api.asUser()), { serviceDeskId, rows });
     const linked = results.filter((r) => r.status === 'done').length;
     const importSessionId = String(payload?.importSessionId || '').trim();
     if (importSessionId) {

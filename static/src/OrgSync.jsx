@@ -5,6 +5,19 @@ import { organisationKey } from './organisations.js';
 const sourceLabel = { 'client-changed': ['Client changed', 'info'], created: ['New ticket', 'success'], backfill: ['Bulk correction', 'discovery'], 'missing-mapping': ['No mapping', 'warning'], failed: ['Failed', 'danger'] };
 const CORRECT_CHUNK = 25;
 
+// A dropdown of every option of a select field. A saved value that isn't an option any more (renamed,
+// removed, or typed before dropdowns existed) stays visible and marked, so nothing changes silently.
+function ValueSelect({ options, value, onChange, label, emptyLabel }) {
+  const current = String(value || '').trim();
+  const match = options.find((o) => o.toLowerCase() === current.toLowerCase());
+  const stale = current && !match;
+  return <select className="nq-select" aria-label={label} value={stale ? current : (match || '')} onChange={(e) => onChange(e.target.value)}>
+    <option value="">{emptyLabel}</option>
+    {stale && <option value={current}>{current} (not an option now)</option>}
+    {options.map((o) => <option key={o} value={o}>{o}</option>)}
+  </select>;
+}
+
 /**
  * Organisation sync tab: settings, client → organisation mappings, sync health and recent corrections.
  * `orgs` is the full organisation list from the Organisations tab loader.
@@ -16,6 +29,10 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
   const [message, setMessage] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [secondSuggestions, setSecondSuggestions] = useState([]);
+  // Every option of the Client / second field in the selected projects ({ found, options }); found is false
+  // for text fields, which keep the typing box.
+  const [clientOptions, setClientOptions] = useState({ found: false, options: [] });
+  const [secondOptions, setSecondOptions] = useState({ found: false, options: [] });
   const [scan, setScan] = useState(null);
   const [correcting, setCorrecting] = useState(null);
   const [confirmCorrect, setConfirmCorrect] = useState(false);
@@ -51,6 +68,15 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
     if (!draft?.secondaryFieldId) { setSecondSuggestions([]); return; }
     invoke('getClientValueSuggestions', { fieldId: draft.secondaryFieldId, query: '' }).then(setSecondSuggestions).catch(() => setSecondSuggestions([]));
   }, [draft?.secondaryFieldId]);
+  const projectsKey = (draft?.projectKeys || []).join(',');
+  useEffect(() => {
+    const load = (fieldId, set) => {
+      if (!fieldId || !draft?.projectKeys?.length) { set({ found: false, options: [] }); return; }
+      invoke('getSyncFieldOptions', { fieldId, projectKeys: draft.projectKeys }).then(set).catch(() => set({ found: false, options: [] }));
+    };
+    load(draft?.clientFieldId, setClientOptions);
+    load(draft?.secondaryFieldId, setSecondOptions);
+  }, [draft?.clientFieldId, draft?.secondaryFieldId, projectsKey]);
 
   if (!setup || !draft) return <Card title="Organisation sync"><Loading text="Loading sync settings…"/></Card>;
 
@@ -182,8 +208,12 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
         {draft.mappings.length ? <div className="nq-table-wrap"><table className="nq-table">
           <thead><tr><th>Client value</th>{draft.secondaryFieldId && <th>{secondName} (optional)</th>}<th>Organisation</th><th aria-label="Actions"/></tr></thead>
           <tbody>{draft.mappings.map((m, i) => <tr key={i}>
-            <td><input className="nq-input" list="sync-client-values" value={m.clientValue} onChange={(e) => setMapping(i, { clientValue: e.target.value })} aria-label={`Client value ${i + 1}`} placeholder="e.g. RYR"/></td>
-            {draft.secondaryFieldId && <td><input className="nq-input" list="sync-second-values" value={m.secondaryValue || ''} onChange={(e) => setMapping(i, { secondaryValue: e.target.value })} aria-label={`Second value ${i + 1}`} placeholder="Any (client default)"/></td>}
+            <td>{clientOptions.found
+              ? <ValueSelect options={clientOptions.options} value={m.clientValue} onChange={(v) => setMapping(i, { clientValue: v })} label={`Client value ${i + 1}`} emptyLabel="Choose a client…"/>
+              : <input className="nq-input" list="sync-client-values" value={m.clientValue} onChange={(e) => setMapping(i, { clientValue: e.target.value })} aria-label={`Client value ${i + 1}`} placeholder="e.g. RYR"/>}</td>
+            {draft.secondaryFieldId && <td>{secondOptions.found
+              ? <ValueSelect options={secondOptions.options} value={m.secondaryValue || ''} onChange={(v) => setMapping(i, { secondaryValue: v })} label={`Second value ${i + 1}`} emptyLabel="Any (client default)"/>
+              : <input className="nq-input" list="sync-second-values" value={m.secondaryValue || ''} onChange={(e) => setMapping(i, { secondaryValue: e.target.value })} aria-label={`Second value ${i + 1}`} placeholder="Any (client default)"/>}</td>}
             <td><input className="nq-input" list="sync-organisations" value={m.organisation} onChange={(e) => setMapping(i, { organisation: e.target.value })} aria-label={`Organisation ${i + 1}`} placeholder="Start typing an organisation"/></td>
             <td className="nq-table__actions"><Button appearance="subtle" small onClick={() => update({ mappings: draft.mappings.filter((_, j) => j !== i) })}>Remove</Button></td>
           </tr>)}</tbody>

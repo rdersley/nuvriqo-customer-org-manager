@@ -1,7 +1,7 @@
 // A fake Jira site. `site.organizations` backs the JSM organisation endpoints; `site.issues` and
 // `site.fields` back the issue, field and JQL search endpoints used by Client → Organisation sync.
 // Every request is logged with who made it (`user` for asUser, `app` for asApp).
-export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map(), accounts: new Map(), deskCustomers: new Map(), orgMembers: new Map(), hideEmails: false, failMembership: new Set(), searchLag: 0 };
+export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin: true, issues: new Map(), fields: [], failIssueIds: new Set(), serviceDesks: [], projectOrgs: new Map(), accounts: new Map(), deskCustomers: new Map(), orgMembers: new Map(), hideEmails: false, failMembership: new Set(), searchLag: 0, createmeta: {}, throttle: 0, throttlePath: '' };
 
 export const CLIENT_FIELD = 'customfield_10050';
 export const ORG_FIELD = 'customfield_10002';
@@ -18,6 +18,9 @@ export function resetSite(count = 0) {
   site.orgMembers = new Map();
   site.hideEmails = false; // Jira hides emailAddress for some accounts
   site.failMembership = new Set(); // e.g. 'org:30' makes adding members to org 30 fail
+  site.throttle = 0; // the next N matching requests get 429 (like Jira rate limiting)
+  site.throttlePath = '';
+  site.createmeta = {}; // projectKey -> [{ id, fields: [{ fieldId, allowedValues }] }]; a project set to 'forbidden' returns 403
   site.searchLag = 0; // like the live site: a new account is only found by user search after this many searches
   site.isAdmin = true;
   site.issues = new Map();
@@ -65,10 +68,24 @@ function findIssue(idOrKey) {
 async function requestJira(as, path, options = {}) {
   const method = options.method || 'GET';
   site.requests.push({ as, method, path });
+  if (site.throttle > 0 && (!site.throttlePath || path.includes(site.throttlePath))) {
+    site.throttle -= 1;
+    return { ok: false, status: 429, headers: { get: (h) => (h.toLowerCase() === 'retry-after' ? '0' : null) }, text: async () => '<html>The request has been rate-limited.</html>', json: async () => ({}) };
+  }
   if (path.startsWith('/rest/api/3/mypermissions')) {
     return json({ permissions: { ADMINISTER: { havePermission: site.isAdmin } } });
   }
   if (path === '/rest/api/3/field') return json(site.fields);
+  const cm = path.match(/^\/rest\/api\/3\/issue\/createmeta\/([^/?]+)\/issuetypes(?:\/([^/?]+))?\?(.*)$/);
+  if (cm) {
+    const types = site.createmeta[decodeURIComponent(cm[1])];
+    if (types === 'forbidden') return json({ errorMessages: ['No permission'] }, 403);
+    if (!cm[2]) return json({ issueTypes: (types || []).map((t) => ({ id: t.id })) });
+    const q = new URLSearchParams(cm[3]);
+    const all = (types || []).find((t) => t.id === cm[2])?.fields || [];
+    const startAt = Number(q.get('startAt') || 0);
+    return json({ fields: all.slice(startAt, startAt + Number(q.get('maxResults') || 50)), total: all.length, startAt });
+  }
   if (path.startsWith('/rest/api/3/jql/autocompletedata/suggestions')) {
     return json({ results: [{ value: 'RYR', displayName: 'RYR' }, { value: '"Other Client"', displayName: 'Other Client' }] });
   }

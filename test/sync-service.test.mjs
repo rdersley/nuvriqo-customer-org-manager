@@ -197,3 +197,28 @@ test('second field: health check reports unmapped Client + second combinations',
 test('second field: saving rejects a field that is not a select/text custom field', async () => {
   await assert.rejects(call('saveSyncConfig', settings({ secondaryFieldId: 'customfield_10070', mappings: splitMappings })), /second field is not a single-select or text/);
 });
+
+// ---- mapping dropdowns: every option of a select field, from create-issue metadata ----
+const opt = (...values) => values.map((value, i) => ({ id: String(i), value }));
+const filler = Array.from({ length: 230 }, (_, i) => ({ fieldId: `customfield_2${i}`, allowedValues: [] }));
+
+test('field options: merged across projects and issue types, deduplicated and sorted', async () => {
+  site.createmeta = {
+    SD: [
+      { id: '1', fields: [{ fieldId: CLIENT_FIELD, allowedValues: opt('RYR - Ryanair', 'LDA - Lauda') }] },
+      { id: '2', fields: [{ fieldId: CLIENT_FIELD, allowedValues: opt('RYR - Ryanair', 'BUZ - Buzz') }] }
+    ],
+    OPS: [{ id: '3', fields: [...filler, { fieldId: CLIENT_FIELD, allowedValues: opt('MAL - Malta Air') }] }], // past the first 200 fields
+    NOPE: 'forbidden'
+  };
+  const r = await call('getSyncFieldOptions', { fieldId: CLIENT_FIELD, projectKeys: ['SD', 'ops', 'NOPE'] });
+  assert.equal(r.found, true);
+  assert.deepEqual(r.options, ['BUZ - Buzz', 'LDA - Lauda', 'MAL - Malta Air', 'RYR - Ryanair']);
+});
+
+test('field options: a field on no create screen (e.g. text) reports found: false', async () => {
+  site.createmeta = { SD: [{ id: '1', fields: [{ fieldId: CLIENT_FIELD, allowedValues: opt('RYR - Ryanair') }] }] };
+  assert.deepEqual(await call('getSyncFieldOptions', { fieldId: 'customfield_10060', projectKeys: ['SD'] }), { found: false, options: [] });
+  assert.deepEqual(await call('getSyncFieldOptions', { fieldId: CLIENT_FIELD, projectKeys: [] }), { found: false, options: [] });
+  await assert.rejects(call('getSyncFieldOptions', { fieldId: 'summary', projectKeys: ['SD'] }), /A field is required/);
+});
