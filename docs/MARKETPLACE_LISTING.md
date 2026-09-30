@@ -84,8 +84,9 @@ The questionnaire ignores automated input, so an administrator types these in by
 > write:jira-work is used only by Client → Organisation sync to set the Organizations field on a ticket (PUT /rest/api/3/issue/{id}), when an administrator has turned sync on for that project, or confirms a bulk correction.
 > read:servicedesk-request lists service projects (GET /rest/servicedeskapi/servicedesk) for the service-project picker.
 > manage:servicedesk-customer lists a service project's customers, lists organisations, creates organisations that an import needs, and adds imported customers to the chosen service project and to their organisations (/rest/servicedeskapi/servicedesk/{id}/customer, /rest/servicedeskapi/organization, /rest/servicedeskapi/organization/{id}/user).
-> write:customer:jira-service-management and write:customer.profile:jira-service-management create and update customer accounts (email, display name) through the JSM customer bulk API (/jsm/csm/api/v1/customer/profile/bulk).
+> write:customer:jira-service-management and write:customer.profile:jira-service-management create and update customer accounts (email, display name, customer detail values) through the JSM customer bulk API (/jsm/csm/api/v1/customer/profile/bulk).
 > read:task:jira-service-management reads the status of those bulk tasks (/jsm/csm/api/v1/tasks/{id}) for the Import History view.
+> read:customer.detail-field:jira-service-management lists the site's customer detail field definitions (/jsm/csm/api/v1/customer/details) so the importer can map CSV columns to them and check values against each field's type and options. Detail values themselves are written in the same bulk profile call.
 
 ### More Privacy & Security answers
 
@@ -136,12 +137,13 @@ These are carried over from the August Confluence "Marketplace Submission Pack" 
 4. **Organisations:** every organisation loads, with a count; search filters.
 5. **Import:** upload a small CSV (`Email,Full Name,Organisation`) with one invalid email and one new organisation. The preview marks rows Create / Update / Skip / Error and notes the organisation to be created. Click Import. The result says how many customers were added, and the new organisation exists with the customer in it.
 6. **Column mapping:** upload a CSV with other column names (for example `Contact,Mail,Company`). Choose the columns, preview, save the mapping, and upload again: the mapping is applied automatically.
+   **Customer details:** create a customer detail field (for example a single-choice "Base" with options DUB and STN) under Customer details in JSM. Upload `Email,First Name,Last Name,Base`: the full name is built from the two name columns, Base is mapped automatically, a value that isn't an option shows as an Error, and after import the customer's Base is set.
 7. **Organisation sync:** create a single-select field "Client" on a service project, and an organisation added to that project. Map a Client value to the organisation, select the project, turn sync on and save. Create a ticket with that Client value: its Organizations field is set within seconds. **Check tickets** shows the counts, and Recent corrections lists the change.
 8. **Import History** shows the session and its bulk task.
 
-### Release notes (1.0 / app version 0.5.0)
+### Release notes (1.0 / app version 0.7.0)
 
-> First Marketplace release of Nuvriqo Customer & Organisation Manager for Jira Service Management: a Jira admin page to view and search customers and organisations; CSV import with column mapping and saved mappings; a Jira-aware Create / Update / Skip / Error preview; automatic creation of missing organisations after checking every organisation on the site; imports of 16,000+ rows in retry-safe batches that add customers to the service project and their organisations; resumable imports; confirmation for large imports; import history; and Client → Organisation sync that keeps the JSM Organizations field in step with a Client field, with a health check and bulk correction. Built on Atlassian Forge with no external services.
+> First Marketplace release of Nuvriqo Customer & Organisation Manager for Jira Service Management: a Jira admin page to view and search customers and organisations; CSV import with column mapping and saved mappings, including a full name built from first and last name columns and your JSM customer detail fields (checked against each field's type and options; blank cells leave values unchanged); a Jira-aware Create / Update / Skip / Error preview; automatic creation of missing organisations after checking every organisation on the site; imports of 16,000+ rows in retry-safe batches that add customers to the service project and their organisations; resumable imports; confirmation for large imports; import history; and Client → Organisation sync that keeps the JSM Organizations field in step with a Client field, with a health check and bulk correction. Built on Atlassian Forge with no external services.
 
 ## Pricing
 

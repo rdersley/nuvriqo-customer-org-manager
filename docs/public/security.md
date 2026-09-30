@@ -38,8 +38,9 @@ Every request is checked on the server for the **Administer Jira** permission. T
 | `write:jira-work` | Setting the Organizations field for Organisation sync |
 | `read:servicedesk-request` | Listing service projects |
 | `manage:servicedesk-customer` | Listing customers and organisations, creating organisations, and adding imported customers to the service project and organisations |
-| `write:customer:jira-service-management`, `write:customer.profile:jira-service-management` | Creating and updating customers and their organisation membership |
+| `write:customer:jira-service-management`, `write:customer.profile:jira-service-management` | Creating and updating customers, their customer details and their organisation membership |
 | `read:task:jira-service-management` | Showing the status of import tasks |
+| `read:customer.detail-field:jira-service-management` | Listing your customer detail fields so an import can fill them in |
 
 ## Uninstalling
 
