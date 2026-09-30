@@ -4,7 +4,7 @@ import { kvs } from '@forge/kvs';
 import { normaliseConfig, inScope } from './rules.js';
 import {
   SYNC_CONFIG_KEY, SYNC_HEALTH_KEY, detectFields, getConfig, toSyncIssue, fetchSyncIssue,
-  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage, projectOrganisationGaps
+  setOrganisations, evaluateIssue, logCorrection, recentCorrections, searchPage, projectOrganisationGaps, missingLabel
 } from './jira.js';
 
 const SCAN_BUDGET_MS = 15000;
@@ -23,6 +23,9 @@ export function registerSyncResolvers(secureDefine) {
     const fields = await detectFields(api.asUser());
     const clientField = fields.clientCandidates.find((f) => f.id === payload?.clientFieldId);
     if (payload?.clientFieldId && !clientField) throw new Error('The chosen Client field is not a single-select or text custom field on this site.');
+    if (payload?.secondaryFieldId && !fields.clientCandidates.some((f) => f.id === payload.secondaryFieldId)) {
+      throw new Error('The chosen second field is not a single-select or text custom field on this site.');
+    }
     const config = normaliseConfig({
       ...payload,
       organisationsFieldId: fields.organisationsField?.id,
@@ -68,8 +71,8 @@ export function registerSyncResolvers(secureDefine) {
         const r = evaluateIssue(issue, config);
         if (r.status === 'correct') totals.correct += 1;
         else if (r.status === 'no-client') totals.noClient += 1;
-        else if (r.status === 'missing-mapping') missing[r.clientValue] = (missing[r.clientValue] || 0) + 1;
-        else needsChange.push({ id: issue.id, key: issue.key, clientValue: r.clientValue, from: r.current, to: r.target });
+        else if (r.status === 'missing-mapping') missing[missingLabel(r)] = (missing[missingLabel(r)] || 0) + 1;
+        else needsChange.push({ id: issue.id, key: issue.key, clientValue: r.clientValue, secondaryValue: r.secondaryValue || undefined, from: r.current, to: r.target });
       }
       nextPageToken = body?.nextPageToken || null;
       if (!nextPageToken || body?.isLast) { complete = true; break; }
@@ -107,7 +110,7 @@ export function registerSyncResolvers(secureDefine) {
         const r = evaluateIssue(issue, config);
         if (!inScope(config, issue) || r.status !== 'needs-change') { unchanged.push(issue.key); continue; }
         await setOrganisations(jira, issue.id, config, r.target);
-        await logCorrection({ issueKey: issue.key, clientValue: r.clientValue, from: r.current, to: r.target, source: 'backfill' });
+        await logCorrection({ issueKey: issue.key, clientValue: r.clientValue, secondaryValue: r.secondaryValue || undefined, from: r.current, to: r.target, source: 'backfill' });
         corrected.push(issue.key);
       } catch (e) {
         failed.push({ id, message: e.message });

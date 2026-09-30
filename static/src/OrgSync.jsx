@@ -15,6 +15,7 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
+  const [secondSuggestions, setSecondSuggestions] = useState([]);
   const [scan, setScan] = useState(null);
   const [correcting, setCorrecting] = useState(null);
   const [confirmCorrect, setConfirmCorrect] = useState(false);
@@ -33,9 +34,10 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
       setDraft({
         enabled: Boolean(c.enabled),
         clientFieldId: c.clientFieldId || '',
+        secondaryFieldId: c.secondaryFieldId || '',
         projectKeys: c.projectKeys || [],
         ignoredRequestTypeIds: c.ignoredRequestTypeIds || [],
-        mappings: (c.mappings || []).map((m) => ({ clientValue: m.clientValue, organisation: m.organizationName || '', organizationId: m.organizationId }))
+        mappings: (c.mappings || []).map((m) => ({ clientValue: m.clientValue, secondaryValue: m.secondaryValue || '', organisation: m.organizationName || '', organizationId: m.organizationId }))
       });
     } catch (e) { setMessage({ kind: 'error', text: e.message }); }
   }
@@ -45,12 +47,19 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
     if (!draft?.clientFieldId) return;
     invoke('getClientValueSuggestions', { fieldId: draft.clientFieldId, query: '' }).then(setSuggestions).catch(() => setSuggestions([]));
   }, [draft?.clientFieldId]);
+  useEffect(() => {
+    if (!draft?.secondaryFieldId) { setSecondSuggestions([]); return; }
+    invoke('getClientValueSuggestions', { fieldId: draft.secondaryFieldId, query: '' }).then(setSecondSuggestions).catch(() => setSecondSuggestions([]));
+  }, [draft?.secondaryFieldId]);
 
   if (!setup || !draft) return <Card title="Organisation sync"><Loading text="Loading sync settings…"/></Card>;
 
   const update = (patch) => { setDraft((d) => ({ ...d, ...patch })); setMessage(null); };
   const setMapping = (i, patch) => update({ mappings: draft.mappings.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
-  const addMapping = (clientValue = '') => update({ mappings: [...draft.mappings, { clientValue, organisation: '', organizationId: '' }] });
+  const addMapping = (clientValue = '', secondaryValue = '') => update({ mappings: [...draft.mappings, { clientValue, secondaryValue, organisation: '', organizationId: '' }] });
+  // Health-check keys for unmapped values are the Client value, plus "\u001f" and the second value when there is one.
+  const splitKey = (key) => { const [clientValue, secondaryValue = ''] = String(key).split('\u001f'); return { clientValue, secondaryValue }; };
+  const both = (clientValue, secondaryValue) => (secondaryValue ? `${clientValue} · ${secondaryValue}` : clientValue);
   const toggleProject = (key) => update({ projectKeys: draft.projectKeys.includes(key) ? draft.projectKeys.filter((k) => k !== key) : [...draft.projectKeys, key] });
 
   // Resolves typed organisation names to ids; returns the problem rows, if any.
@@ -62,7 +71,7 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
         const org = orgByName.get(organisationKey(m.organisation));
         if (!m.clientValue.trim()) problems.push(`Row ${i + 1}: enter a client value.`);
         else if (!org) problems.push(`Row ${i + 1}: "${m.organisation || '(blank)'}" isn't an organisation on this site.`);
-        return { clientValue: m.clientValue.trim(), organizationId: org ? String(org.id) : '', organizationName: org?.name || '' };
+        return { clientValue: m.clientValue.trim(), secondaryValue: draft.secondaryFieldId ? String(m.secondaryValue || '').trim() : '', organizationId: org ? String(org.id) : '', organizationName: org?.name || '' };
       });
     return { mappings, problems };
   }
@@ -129,7 +138,9 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
 
   const { fields, health } = setup;
   const missingEntries = Object.entries(scan?.missing || health?.missing || {}).sort((a, b) => b[1] - a[1]);
-  const mappedValues = new Set(draft.mappings.map((m) => m.clientValue.trim().toLowerCase()));
+  const pairKey = (c, v) => `${String(c || '').trim().toLowerCase()}\u001f${String(v || '').trim().toLowerCase()}`;
+  const mappedValues = new Set(draft.mappings.map((m) => pairKey(m.clientValue, m.secondaryValue)));
+  const secondName = fields.clientCandidates.find((f) => f.id === draft.secondaryFieldId)?.name || 'Second field';
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
 
   return <>
@@ -144,6 +155,12 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
               {fields.clientCandidates.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.type === 'select' ? 'select list' : 'text'})</option>)}
             </select>
           </Field>
+          <Field label="Second field (optional)" htmlFor="sync-second-field" help="Use when one client is split across several organisations, for example by site or region. Rows without a second value are the client's default.">
+            <select id="sync-second-field" className="nq-select" value={draft.secondaryFieldId} onChange={(e) => update({ secondaryFieldId: e.target.value })}>
+              <option value="">Not used</option>
+              {fields.clientCandidates.filter((f) => f.id !== draft.clientFieldId).map((f) => <option key={f.id} value={f.id}>{f.name} ({f.type === 'select' ? 'select list' : 'text'})</option>)}
+            </select>
+          </Field>
           <Field label="Organizations field" htmlFor="sync-org-field" help="Found automatically.">
             <input id="sync-org-field" className="nq-input" readOnly value={fields.organisationsField ? fields.organisationsField.name : 'Not found'}/>
           </Field>
@@ -153,18 +170,20 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
             {serviceDesks.map((d) => <label key={d.projectKey} className="nq-check"><input type="checkbox" checked={draft.projectKeys.includes(d.projectKey)} onChange={() => toggleProject(d.projectKey)}/> {d.projectName} ({d.projectKey})</label>)}
           </div>
         </Field>
-        <label className="nq-check"><input type="checkbox" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })}/> Sync is on: correct the Organizations field whenever a ticket is created or its Client changes</label>
+        <label className="nq-check"><input type="checkbox" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })}/> Sync is on: correct the Organizations field whenever a ticket is created or its Client{draft.secondaryFieldId ? ` or ${secondName}` : ''} changes</label>
       </div>
     </Card>
 
     <Card title="Client mappings" description="Each Client value and the organisation it belongs to. Organisations that aren't in any mapping are never removed from tickets.">
       <div className="nq-stack">
         <datalist id="sync-client-values">{suggestions.map((v) => <option key={v} value={v}/>)}</datalist>
+        <datalist id="sync-second-values">{secondSuggestions.map((v) => <option key={v} value={v}/>)}</datalist>
         <datalist id="sync-organisations">{orgs.slice(0, 5000).map((o) => <option key={o.id} value={o.name}/>)}</datalist>
         {draft.mappings.length ? <div className="nq-table-wrap"><table className="nq-table">
-          <thead><tr><th>Client value</th><th>Organisation</th><th aria-label="Actions"/></tr></thead>
+          <thead><tr><th>Client value</th>{draft.secondaryFieldId && <th>{secondName} (optional)</th>}<th>Organisation</th><th aria-label="Actions"/></tr></thead>
           <tbody>{draft.mappings.map((m, i) => <tr key={i}>
             <td><input className="nq-input" list="sync-client-values" value={m.clientValue} onChange={(e) => setMapping(i, { clientValue: e.target.value })} aria-label={`Client value ${i + 1}`} placeholder="e.g. RYR"/></td>
+            {draft.secondaryFieldId && <td><input className="nq-input" list="sync-second-values" value={m.secondaryValue || ''} onChange={(e) => setMapping(i, { secondaryValue: e.target.value })} aria-label={`Second value ${i + 1}`} placeholder="Any (client default)"/></td>}
             <td><input className="nq-input" list="sync-organisations" value={m.organisation} onChange={(e) => setMapping(i, { organisation: e.target.value })} aria-label={`Organisation ${i + 1}`} placeholder="Start typing an organisation"/></td>
             <td className="nq-table__actions"><Button appearance="subtle" small onClick={() => update({ mappings: draft.mappings.filter((_, j) => j !== i) })}>Remove</Button></td>
           </tr>)}</tbody>
@@ -192,7 +211,7 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
         {scan && !scan.running && scan.needsChange.length > 0 && <>
           <div className="nq-table-wrap"><table className="nq-table">
             <thead><tr><th>Ticket</th><th>Client</th><th>Organisations now</th><th>Will become</th></tr></thead>
-            <tbody>{scan.needsChange.slice(0, 100).map((x) => <tr key={x.id}><td>{x.key}</td><td>{x.clientValue}</td><td>{orgNames(x.from)}</td><td>{orgNames(x.to)}</td></tr>)}</tbody>
+            <tbody>{scan.needsChange.slice(0, 100).map((x) => <tr key={x.id}><td>{x.key}</td><td>{both(x.clientValue, x.secondaryValue)}</td><td>{orgNames(x.from)}</td><td>{orgNames(x.to)}</td></tr>)}</tbody>
           </table></div>
           {scan.needsChange.length > 100 && <p className="nq-help">Showing the first 100 of {scan.needsChange.length.toLocaleString()}.</p>}
           {!confirmCorrect
@@ -212,8 +231,8 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
           <h3 className="nq-card__title">Client values with no mapping</h3>
           <div className="nq-table-wrap"><table className="nq-table">
             <thead><tr><th>Client value</th><th>Tickets</th><th aria-label="Actions"/></tr></thead>
-            <tbody>{missingEntries.slice(0, 50).map(([value, count]) => <tr key={value}><td>{value}</td><td>{count.toLocaleString()}</td>
-              <td className="nq-table__actions">{mappedValues.has(value.toLowerCase()) ? <span className="nq-muted">Added, not saved</span> : <Button appearance="subtle" small onClick={() => addMapping(value)}>Add mapping</Button>}</td></tr>)}</tbody>
+            <tbody>{missingEntries.slice(0, 50).map(([key, count]) => { const { clientValue, secondaryValue } = splitKey(key); return <tr key={key}><td>{both(clientValue, secondaryValue)}</td><td>{count.toLocaleString()}</td>
+              <td className="nq-table__actions">{mappedValues.has(pairKey(clientValue, secondaryValue)) ? <span className="nq-muted">Added, not saved</span> : <Button appearance="subtle" small onClick={() => addMapping(clientValue, secondaryValue)}>Add mapping</Button>}</td></tr>; })}</tbody>
           </table></div>
         </>}
       </div>
@@ -222,7 +241,7 @@ export default function OrgSync({ invoke, serviceDesks, orgs, loadOrgs, readOnly
     <Card title="Recent corrections" description="Changes made by the app in the last 90 days, newest first." actions={<Button appearance="subtle" onClick={() => { loadOrgs(); invoke('getSyncLog').then(setLog); }}>Refresh</Button>}>
       {log.length ? <div className="nq-table-wrap"><table className="nq-table">
         <thead><tr><th>When</th><th>Ticket</th><th>Client</th><th>From</th><th>To</th><th>Why</th></tr></thead>
-        <tbody>{log.map((e) => { const [label, kind] = sourceLabel[e.source] || [e.source, 'neutral']; return <tr key={`${e.at}-${e.issueKey}`}><td>{new Date(e.at).toLocaleString()}</td><td>{e.issueKey}</td><td>{e.clientValue}</td><td>{orgNames(e.from)}</td><td>{e.source === 'missing-mapping' ? '—' : orgNames(e.to)}</td><td><Lozenge kind={kind}>{label}</Lozenge>{e.error && <div className="nq-help">{e.error}</div>}</td></tr>; })}</tbody>
+        <tbody>{log.map((e) => { const [label, kind] = sourceLabel[e.source] || [e.source, 'neutral']; return <tr key={`${e.at}-${e.issueKey}`}><td>{new Date(e.at).toLocaleString()}</td><td>{e.issueKey}</td><td>{both(e.clientValue, e.secondaryValue)}</td><td>{orgNames(e.from)}</td><td>{e.source === 'missing-mapping' ? '—' : orgNames(e.to)}</td><td><Lozenge kind={kind}>{label}</Lozenge>{e.error && <div className="nq-help">{e.error}</div>}</td></tr>; })}</tbody>
       </table></div> : <EmptyState title="No corrections yet" compact>When sync corrects a ticket, it's listed here.</EmptyState>}
     </Card>
   </>;

@@ -1,6 +1,6 @@
 # Data handling — Nuvriqo Customer & Organisation Manager
 
-_Last checked against the code: 29 September 2026 (app version 0.5.0)._
+_Last checked against the code: 29 September 2026 (app version 0.6.0)._
 
 This is the source of truth for the Privacy & Security questionnaire and the public security page. If the code changes what is read, written or stored, update this file in the same pull request.
 
@@ -57,7 +57,7 @@ Installation-scoped Forge KVS only. No customer names or email addresses are sto
 | `import-recovery:<serviceDeskId>:<fingerprint>` | Pointer to the session that can be resumed for a file | 180 days, or deleted when the session completes |
 | `import:<idempotencyKey>` | Bulk task record: Jira task id, batch number, row count, row range, timestamp | 180 days |
 | `import-mapping:<id>` | Saved CSV column mapping: mapping name, service project id, CSV header names | Until an administrator deletes it |
-| `sync-config` | Sync settings: on/off, Client, Organizations and Request Type field ids, project keys, ignored request type ids, and the Client value → organisation id/name mappings | Until changed |
+| `sync-config` | Sync settings: on/off, Client, optional second, Organizations and Request Type field ids, project keys, ignored request type ids, and the Client value (plus optional second-field value) → organisation id/name mappings | Until changed |
 | `sync-health` | The last ticket check's counts, and unmapped Client values with ticket counts | Replaced by the next check |
 | `sync-log:<time>:<issueKey>` | A correction: issue key, Client value, organisation ids before and after, and why (client changed / new ticket / bulk correction / no mapping) | 90 days (KVS TTL) |
 

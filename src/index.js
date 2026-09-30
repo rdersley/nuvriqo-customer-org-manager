@@ -7,7 +7,7 @@ import { registerImportFinalise, updateSessionBatch } from './import/finalise.js
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.5.0';
+export const APP_VERSION = '0.6.0';
 
 const resolver = new Resolver();
 

@@ -6,6 +6,7 @@ export const site = { organizations: [], requests: [], bulkRequests: [], isAdmin
 export const CLIENT_FIELD = 'customfield_10050';
 export const ORG_FIELD = 'customfield_10002';
 export const REQUEST_TYPE_FIELD = 'customfield_10010';
+export const SECOND_FIELD = 'customfield_10080';
 
 export function resetSite(count = 0) {
   site.organizations = Array.from({ length: count }, (_, i) => ({ id: String(i + 1), name: `Org ${i + 1}` }));
@@ -29,19 +30,21 @@ export function resetSite(count = 0) {
     { id: CLIENT_FIELD, name: 'Client', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select' } },
     { id: 'customfield_10060', name: 'Brand code', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield' } },
     { id: 'customfield_10070', name: 'Story points', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float' } },
+    { id: SECOND_FIELD, name: 'Site', custom: true, schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select' } },
     { id: ORG_FIELD, name: 'Organizations', custom: true, schema: { custom: 'com.atlassian.servicedesk:sd-customer-organizations' } },
     { id: REQUEST_TYPE_FIELD, name: 'Request Type', custom: true, schema: { custom: 'com.atlassian.servicedesk:vp-origin' } }
   ];
 }
 
 // Adds a ticket. `orgIds` are organisation ids already on it.
-export function addIssue({ id, key, project = 'SD', client = null, orgIds = [], requestTypeId = '1' }) {
+export function addIssue({ id, key, project = 'SD', client = null, second = null, orgIds = [], requestTypeId = '1' }) {
   site.issues.set(String(id), {
     id: String(id),
     key,
     fields: {
       project: { key: project },
       [CLIENT_FIELD]: client == null ? null : { value: client, id: `opt-${client}` },
+      [SECOND_FIELD]: second == null ? null : { value: second, id: `opt-${second}` },
       [ORG_FIELD]: orgIds.map((o) => ({ id: Number(o), name: `Org ${o}` })),
       [REQUEST_TYPE_FIELD]: { requestType: { id: requestTypeId } }
     }

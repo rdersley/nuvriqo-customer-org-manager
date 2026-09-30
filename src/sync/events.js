@@ -11,7 +11,9 @@ export async function handleIssueEvent(event, context) {
   if (!config?.enabled) return { skipped: 'disabled' };
 
   const isUpdate = event?.eventType === 'avi:jira:updated:issue';
-  if (isUpdate && !changelogTouchesField(event?.changelog, config.clientFieldId)) return { skipped: 'client-unchanged' };
+  const relevant = changelogTouchesField(event?.changelog, config.clientFieldId)
+    || (config.secondaryFieldId && changelogTouchesField(event?.changelog, config.secondaryFieldId));
+  if (isUpdate && !relevant) return { skipped: 'client-unchanged' };
   const eventProject = event?.issue?.fields?.project?.key;
   if (eventProject && !config.projectKeys.includes(eventProject)) return { skipped: 'out-of-scope' };
 
@@ -30,9 +32,9 @@ export async function handleIssueEvent(event, context) {
       await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.target, source: 'failed', error: String(error.message).slice(0, 300) });
       return { status: 'failed', issueKey: issue.key };
     }
-    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.target, source: isUpdate ? 'client-changed' : 'created' });
+    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, secondaryValue: result.secondaryValue || undefined, from: result.current, to: result.target, source: isUpdate ? 'client-changed' : 'created' });
   } else if (result.status === 'missing-mapping') {
-    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, from: result.current, to: result.current, source: 'missing-mapping' });
+    await logCorrection({ issueKey: issue.key, clientValue: result.clientValue, secondaryValue: result.secondaryValue || undefined, from: result.current, to: result.current, source: 'missing-mapping' });
   }
   return { status: result.status, issueKey: issue.key };
 }

@@ -3,6 +3,10 @@
 // The Client field is authoritative. When it has a mapped value, the ticket's Organizations field must
 // contain that value's organisation and no other *mapped* organisation. Organisations that aren't in any
 // mapping (added by hand) are left alone. An empty Client, or a value with no mapping, changes nothing.
+//
+// An optional second field (one for the whole setup) splits a client across several organisations: a row
+// with a Client value *and* a second-field value is used when both match; a Client-only row is that
+// client's default for any other (or empty) second value.
 
 export const clientKey = (value) => String(value ?? '').trim().toLowerCase();
 
@@ -21,13 +25,19 @@ export function readOrganisationIds(fieldValue) {
   return fieldValue.map((org) => String(org?.id ?? org ?? '')).filter(Boolean);
 }
 
+const SEP = '\u0000';
+export const mappingKey = (clientValue, secondaryValue = '') => `${clientKey(clientValue)}${SEP}${clientKey(secondaryValue)}`;
+
 export function mappingIndex(mappings) {
-  const byClient = new Map();
+  const byKey = new Map();
+  const mappedOrgIds = new Set();
   for (const m of mappings || []) {
-    const key = clientKey(m?.clientValue);
-    if (key && m?.organizationId != null && !byClient.has(key)) byClient.set(key, String(m.organizationId));
+    if (!clientKey(m?.clientValue) || m?.organizationId == null) continue;
+    const key = mappingKey(m.clientValue, m.secondaryValue);
+    if (!byKey.has(key)) byKey.set(key, String(m.organizationId));
+    mappedOrgIds.add(String(m.organizationId));
   }
-  return { byClient, mappedOrgIds: new Set(byClient.values()) };
+  return { byKey, mappedOrgIds };
 }
 
 /**
@@ -38,19 +48,21 @@ export function mappingIndex(mappings) {
  *   'missing-mapping' – the Client value has no mapping (nothing is changed)
  *   'no-client'       – the Client field is empty (nothing is changed)
  */
-export function evaluate({ clientFieldValue, organisationsFieldValue, mappings }) {
+export function evaluate({ clientFieldValue, secondaryFieldValue = null, organisationsFieldValue, mappings }) {
   const clientValue = readClientValue(clientFieldValue);
+  const secondaryValue = readClientValue(secondaryFieldValue);
   const current = readOrganisationIds(organisationsFieldValue);
-  if (!clientValue) return { status: 'no-client', clientValue, current, target: current };
+  if (!clientValue) return { status: 'no-client', clientValue, secondaryValue, current, target: current };
 
-  const { byClient, mappedOrgIds } = mappingIndex(mappings);
-  const wanted = byClient.get(clientKey(clientValue));
-  if (!wanted) return { status: 'missing-mapping', clientValue, current, target: current };
+  const { byKey, mappedOrgIds } = mappingIndex(mappings);
+  // Most specific first: Client + second value, then the client's default (Client-only row).
+  const wanted = (secondaryValue && byKey.get(mappingKey(clientValue, secondaryValue))) || byKey.get(mappingKey(clientValue));
+  if (!wanted) return { status: 'missing-mapping', clientValue, secondaryValue, current, target: current };
 
   const target = current.filter((id) => id === wanted || !mappedOrgIds.has(id));
   if (!target.includes(wanted)) target.push(wanted);
   const same = target.length === current.length && target.every((id) => current.includes(id));
-  return { status: same ? 'correct' : 'needs-change', clientValue, current, target: same ? current : target };
+  return { status: same ? 'correct' : 'needs-change', clientValue, secondaryValue, current, target: same ? current : target };
 }
 
 // True when a Jira update event's changelog touched the Client field.
@@ -65,11 +77,13 @@ export function normaliseConfig(input) {
   const seen = new Set();
   for (const m of Array.isArray(config.mappings) ? config.mappings : []) {
     const clientValue = String(m?.clientValue ?? '').trim().slice(0, 255);
+    const secondaryValue = String(m?.secondaryValue ?? '').trim().slice(0, 255);
     const organizationId = String(m?.organizationId ?? '').trim();
     if (!clientValue || !/^\d+$/.test(organizationId)) continue;
-    if (seen.has(clientKey(clientValue))) throw new Error(`Client value "${clientValue}" is mapped more than once.`);
-    seen.add(clientKey(clientValue));
-    mappings.push({ clientValue, organizationId, organizationName: String(m?.organizationName ?? '').slice(0, 255) });
+    const key = mappingKey(clientValue, secondaryValue);
+    if (seen.has(key)) throw new Error(`Client value "${clientValue}"${secondaryValue ? ` with "${secondaryValue}"` : ''} is mapped more than once.`);
+    seen.add(key);
+    mappings.push({ clientValue, secondaryValue, organizationId, organizationName: String(m?.organizationName ?? '').slice(0, 255) });
   }
   if (mappings.length > 2000) throw new Error('At most 2,000 client mappings are supported.');
 
@@ -82,12 +96,19 @@ export function normaliseConfig(input) {
   const normalised = {
     enabled: config.enabled === true,
     clientFieldId: fieldId(config.clientFieldId),
+    secondaryFieldId: fieldId(config.secondaryFieldId),
     organisationsFieldId: fieldId(config.organisationsFieldId),
     requestTypeFieldId: fieldId(config.requestTypeFieldId),
     projectKeys,
     ignoredRequestTypeIds,
     mappings
   };
+  if (normalised.secondaryFieldId && normalised.secondaryFieldId === normalised.clientFieldId) {
+    throw new Error('The second field must be different from the Client field.');
+  }
+  if (!normalised.secondaryFieldId && normalised.mappings.some((m) => m.secondaryValue)) {
+    throw new Error('Choose the second field, or remove the second-field values from the mappings.');
+  }
   if (normalised.enabled) {
     if (!normalised.clientFieldId) throw new Error('Choose the Client field before turning sync on.');
     if (!normalised.organisationsFieldId) throw new Error('The JSM Organizations field could not be found on this site.');
