@@ -2,21 +2,24 @@ import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 import { kvs, WhereConditions } from '@forge/kvs';
 import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from './license.js';
+import { retrying, RATE_LIMITED_MESSAGE } from './http.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
 import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.6.1';
+export const APP_VERSION = '0.6.2';
 
 const resolver = new Resolver();
+// Every Jira call from the admin page goes through this: it backs off on 429/503 (src/http.js).
+const asUser = () => retrying(api.asUser());
 
 async function jsonResponse(response) {
   const text = await response.text();
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
   if (!response.ok) {
-    const error = new Error(body?.message || body?.errorMessage || `Atlassian API error ${response.status}`);
+    const error = new Error(response.status === 429 ? RATE_LIMITED_MESSAGE : (body?.message || body?.errorMessage || `Atlassian API error ${response.status}`));
     error.status = response.status;
     error.body = body;
     throw error;
@@ -24,21 +27,32 @@ async function jsonResponse(response) {
   return body;
 }
 
-async function requireAdmin() {
-  const res = await api.asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`);
+// A passed admin check is remembered for 60 seconds per user (in this function instance), so a busy
+// screen doesn't call Jira's permission API on every click. A failed check is never cached.
+const ADMIN_CHECK_TTL_MS = 60000;
+const adminChecks = new Map();
+export function clearAdminCacheForTests() { adminChecks.clear(); }
+
+async function requireAdmin(accountId) {
+  const cached = accountId ? adminChecks.get(accountId) : null;
+  if (cached && cached > Date.now()) return;
+  const res = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`);
   const body = await jsonResponse(res);
-  if (!body?.permissions?.ADMINISTER?.havePermission) {
-    const error = new Error('Jira administrator permission is required to use Customer & Organisation Manager.');
-    error.status = 403;
-    throw error;
+  if (body?.permissions?.ADMINISTER?.havePermission) {
+    if (accountId) adminChecks.set(accountId, Date.now() + ADMIN_CHECK_TTL_MS);
+    return;
   }
+  adminChecks.delete(accountId);
+  const error = new Error('Jira administrator permission is required to use Customer & Organisation Manager.');
+  error.status = 403;
+  throw error;
 }
 
 // Every resolver except health needs a Jira administrator. Resolvers that change Jira or app
 // storage (`{ write: true }`) also need an active licence; see src/license.js.
 function secureDefine(name, handler, { write = false } = {}) {
   resolver.define(name, async (request) => {
-    await requireAdmin();
+    await requireAdmin(request?.context?.accountId);
     if (write && !resolverLicenseAllows(request?.context)) {
       const error = new Error(UNLICENSED_MESSAGE);
       error.status = 402;
@@ -57,7 +71,7 @@ secureDefine('getAppStatus', async ({ context }) => ({
 }));
 
 secureDefine('getServiceDesks', async () => {
-  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
+  const res = await asUser().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`);
   return jsonResponse(res);
 });
 
@@ -72,7 +86,7 @@ secureDefine('getCustomers', async ({ payload }) => {
   const start = Number(payload?.start || 0);
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
 
-  const res = await api.asUser().requestJira(
+  const res = await asUser().requestJira(
     route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?query=${query}&start=${start}&limit=50`,
     { headers: customerHeaders }
   );
@@ -90,7 +104,7 @@ secureDefine('getCustomerIndexBatch', async ({ payload }) => {
   let pagesFetched = 0;
 
   for (let page = 0; page < pages; page += 1) {
-    const res = await api.asUser().requestJira(
+    const res = await asUser().requestJira(
       route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer?start=${start}&limit=50`,
       { headers: customerHeaders }
     );
@@ -123,7 +137,7 @@ secureDefine('getCustomerIndexBatch', async ({ payload }) => {
 secureDefine('createOrganization', async ({ payload }) => {
   const name = String(payload?.name || '').trim();
   if (!name) throw new Error('Organisation name is required');
-  const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
+  const res = await asUser().requestJira(route`/rest/servicedeskapi/organization`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ name })
@@ -158,7 +172,7 @@ async function scanOrganizations(startAt, pages, onPage) {
   let pagesFetched = 0;
 
   while (pagesFetched < maxPages && Date.now() < deadline) {
-    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
+    const res = await asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`);
     const body = await jsonResponse(res);
     const values = body?.values || [];
     pagesFetched += 1;
@@ -210,7 +224,7 @@ secureDefine('createImportOrganizations', async ({ payload }) => {
   }
   const created = [];
   for (const name of names) {
-    const res = await api.asUser().requestJira(route`/rest/servicedeskapi/organization`, {
+    const res = await asUser().requestJira(route`/rest/servicedeskapi/organization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ name })
@@ -264,7 +278,7 @@ secureDefine('deleteImportMapping', async ({ payload }) => {
 secureDefine('getTaskStatus', async ({ payload }) => {
   const taskId = String(payload?.taskId || '');
   if (!taskId) throw new Error('taskId is required');
-  const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/tasks/${taskId}`);
+  const res = await asUser().requestJira(route`/jsm/csm/api/v1/tasks/${taskId}`);
   return jsonResponse(res);
 });
 
@@ -436,7 +450,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
     if (Number(saved.totalBatches) !== totalBatches) throw new Error('Batch count does not match the saved import recovery plan');
   }
 
-  const res = await api.asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, {
+  const res = await asUser().requestJira(route`/jsm/csm/api/v1/customer/profile/bulk`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

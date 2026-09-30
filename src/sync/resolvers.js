@@ -1,5 +1,6 @@
 // UI resolvers for Client → Organisation sync. They run as the signed-in Jira administrator (asUser).
 import api, { route } from '@forge/api';
+import { retrying } from '../http.js';
 import { kvs } from '@forge/kvs';
 import { normaliseConfig, inScope } from './rules.js';
 import {
@@ -10,17 +11,18 @@ import {
 const SCAN_BUDGET_MS = 15000;
 const SCAN_MAX_PAGES = 20;
 const CORRECT_MAX_PER_CALL = 25;
+const SCAN_PAGE_PAUSE_MS = 150;
 
 export function registerSyncResolvers(secureDefine) {
   secureDefine('getSyncSetup', async () => {
-    const jira = api.asUser();
+    const jira = retrying(api.asUser());
     const [fields, config, health] = await Promise.all([detectFields(jira), getConfig(), kvs.get(SYNC_HEALTH_KEY)]);
     return { fields, config, health: health || null };
   });
 
   secureDefine('saveSyncConfig', async ({ payload }) => {
     // Field ids for Organizations and Request Type come from the site, not from the browser.
-    const fields = await detectFields(api.asUser());
+    const fields = await detectFields(retrying(api.asUser()));
     const clientField = fields.clientCandidates.find((f) => f.id === payload?.clientFieldId);
     if (payload?.clientFieldId && !clientField) throw new Error('The chosen Client field is not a single-select or text custom field on this site.');
     if (payload?.secondaryFieldId && !fields.clientCandidates.some((f) => f.id === payload.secondaryFieldId)) {
@@ -33,7 +35,7 @@ export function registerSyncResolvers(secureDefine) {
     });
     const saved = { ...config, updatedAt: new Date().toISOString() };
     await kvs.set(SYNC_CONFIG_KEY, saved);
-    const warnings = saved.mappings.length ? await projectOrganisationGaps(api.asUser(), saved) : [];
+    const warnings = saved.mappings.length ? await projectOrganisationGaps(retrying(api.asUser()), saved) : [];
     return { ...saved, warnings };
   }, { write: true });
 
@@ -43,7 +45,7 @@ export function registerSyncResolvers(secureDefine) {
     if (!/^customfield_\d+$/.test(fieldId)) throw new Error('A Client field is required.');
     const fieldName = `cf[${fieldId.replace('customfield_', '')}]`;
     const fieldValue = String(payload?.query || '').slice(0, 100);
-    const res = await api.asUser().requestJira(route`/rest/api/3/jql/autocompletedata/suggestions?fieldName=${fieldName}&fieldValue=${fieldValue}`);
+    const res = await retrying(api.asUser()).requestJira(route`/rest/api/3/jql/autocompletedata/suggestions?fieldName=${fieldName}&fieldValue=${fieldValue}`);
     if (!res.ok) return [];
     const body = await res.json();
     return (body?.results || []).map((r) => String(r.value ?? '').replace(/^"|"$/g, '')).filter(Boolean);
@@ -55,7 +57,7 @@ export function registerSyncResolvers(secureDefine) {
     if (!/^customfield_\d+$/.test(fieldId)) throw new Error('A field is required.');
     const projectKeys = [...new Set((Array.isArray(payload?.projectKeys) ? payload.projectKeys : []).map((k) => String(k).trim().toUpperCase()).filter((k) => /^[A-Z][A-Z0-9_]{0,254}$/.test(k)))];
     if (!projectKeys.length) return { found: false, options: [] };
-    return fieldOptions(api.asUser(), fieldId, projectKeys);
+    return fieldOptions(retrying(api.asUser()), fieldId, projectKeys);
   });
 
   // Checks tickets in scope, one resumable chunk per call. Changes nothing.
@@ -64,7 +66,7 @@ export function registerSyncResolvers(secureDefine) {
     if (!config?.clientFieldId || !config?.projectKeys?.length || !config?.organisationsFieldId) {
       throw new Error('Save the sync settings (Client field and projects) before checking tickets.');
     }
-    const jira = api.asUser();
+    const jira = retrying(api.asUser());
     const deadline = Date.now() + SCAN_BUDGET_MS;
     let nextPageToken = payload?.nextPageToken || null;
     const totals = { checked: 0, correct: 0, noClient: 0, ignored: 0 };
@@ -85,6 +87,7 @@ export function registerSyncResolvers(secureDefine) {
       }
       nextPageToken = body?.nextPageToken || null;
       if (!nextPageToken || body?.isLast) { complete = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, SCAN_PAGE_PAUSE_MS)); // stay well under Jira's rate limits
     }
     return { ...totals, needsChange, missing, nextPageToken, complete };
   });
@@ -109,7 +112,7 @@ export function registerSyncResolvers(secureDefine) {
     const ids = [...new Set((Array.isArray(payload?.issueIds) ? payload.issueIds : []).map(String).filter((id) => /^\d+$/.test(id)))];
     if (!ids.length) return { corrected: [], unchanged: [], failed: [] };
     if (ids.length > CORRECT_MAX_PER_CALL) throw new Error(`Correct at most ${CORRECT_MAX_PER_CALL} tickets per call.`);
-    const jira = api.asUser();
+    const jira = retrying(api.asUser());
     const corrected = [];
     const unchanged = [];
     const failed = [];

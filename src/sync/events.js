@@ -1,6 +1,7 @@
 // Issue event trigger for Client → Organisation sync. Runs as the app (no user in background events).
 // The manifest filter skips unlicensed sites and the app's own edits; see manifest.yml.
 import api from '@forge/api';
+import { retrying } from '../http.js';
 import { changelogTouchesField, inScope } from './rules.js';
 import { getConfig, fetchSyncIssue, setOrganisations, evaluateIssue, logCorrection } from './jira.js';
 import { triggerLicenseAllows } from '../license.js';
@@ -19,8 +20,16 @@ export async function handleIssueEvent(event, context) {
 
   const issueId = event?.issue?.id;
   if (!issueId) return { skipped: 'no-issue' };
-  const jira = api.asApp();
-  const issue = await fetchSyncIssue(jira, issueId, config);
+  const jira = retrying(api.asApp());
+  let issue;
+  try {
+    issue = await fetchSyncIssue(jira, issueId, config);
+  } catch (error) {
+    if (error.status !== 429 && error.status !== 503) throw error;
+    // Still rate-limited after backing off: record it and stop. Check tickets (or the next change) fixes it.
+    await logCorrection({ issueKey: event?.issue?.key || issueId, clientValue: '', from: [], to: [], source: 'failed', error: 'Jira was rate-limiting the app, so this ticket was not checked. Run Check tickets later to fix it.' });
+    return { status: 'rate-limited' };
+  }
   if (!inScope(config, issue)) return { skipped: 'out-of-scope' };
 
   const result = evaluateIssue(issue, config);
