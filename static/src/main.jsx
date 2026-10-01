@@ -6,9 +6,10 @@ import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Field, Footer } from '@nuvriqo/ui/react';
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
+import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
-import { parseCsvTable, guessMapping, missingMappingFields, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
+import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
+import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
@@ -78,6 +79,9 @@ function App() {
   // Column mapping: the parsed file, the columns chosen for each field, and the mapping the preview used.
   const [csvTable, setCsvTable] = useState(null);
   const [mapping, setMapping] = useState(null);
+  // The site's customer detail fields (empty when the site has none, or before a file is chosen).
+  const [detailFields, setDetailFields] = useState([]);
+  const [detailFieldsError, setDetailFieldsError] = useState('');
   const [appliedMapping, setAppliedMapping] = useState(null);
   const [mappingSource, setMappingSource] = useState('');
   const [savedMappings, setSavedMappings] = useState([]);
@@ -150,6 +154,13 @@ function App() {
     } catch (e) { setError(e.message); }
   }
 
+  // An existing customer whose name already matches: skipped, unless the row sets customer details.
+  function sameNameResult(row, i, orgNote) {
+    const n = detailCount(row);
+    if (!n) return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
+    return { ...row, rowNumber: i + 2, action: 'UPDATE', nameUnchanged: true, reason: `Name already matches; sets ${n === 1 ? '1 customer detail' : `${n} customer details`}. ${orgNote}`.trim() };
+  }
+
   async function buildPreview(parsed, validationResult) {
     if (!parsed.length) { setPreview([]); return; }
     setPreviewing(true); setError('');
@@ -174,7 +185,7 @@ function App() {
           results[i] = !exact
             ? { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' }
             : String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()
-              ? { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' }
+              ? sameNameResult(row, i, orgNote)
               : { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
         } catch (e) {
           results[i] = { ...row, rowNumber: i + 2, action: 'ERROR', reason: `Jira lookup failed: ${e.message}` };
@@ -230,9 +241,7 @@ function App() {
         const exact = byEmail.get(email);
         const orgNote = organisationNote(row, orgNames);
         if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' };
-        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) {
-          return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
-        }
+        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) return sameNameResult(row, i, orgNote);
         return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
       });
       setPreview(results);
@@ -249,7 +258,9 @@ function App() {
     if (!session) return;
     if (session.mapping && !sameMapping(fromSaved(session.mapping), usedMapping)) {
       const m = fromSaved(session.mapping);
-      throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${m.displayName}${m.organisation ? `, Organisation: ${m.organisation}` : ''}). Choose those columns to resume it.`);
+      const name = m.displayName || [m.firstName, m.lastName].filter(Boolean).join(' + ');
+      const details = Object.entries(m.details || {}).map(([field, column]) => `, ${field}: ${column}`).join('');
+      throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${name}${m.organisation ? `, Organisation: ${m.organisation}` : ''}${details}). Choose those columns to resume it.`);
     }
 
     const rowNumbers = Array.isArray(session.actionableRowNumbers) ? session.actionableRowNumbers.map(Number) : [];
@@ -312,15 +323,20 @@ function App() {
     let chosen = null;
     let source = '';
     let session = null;
+    let fields = [];
     try {
       const serviceDeskId = await ensureDeskId();
-      const [saved, recoverable] = await Promise.all([
+      const [saved, recoverable, detail] = await Promise.all([
         invoke('getImportMappings').catch(() => []),
-        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId })
+        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId }),
+        invoke('getCustomerDetailFields').catch((err) => ({ fields: [], error: err.message }))
       ]);
       session = recoverable;
+      fields = detail?.fields || [];
+      setDetailFields(fields);
+      setDetailFieldsError(detail?.error || '');
       setSavedMappings(saved || []);
-      if (session?.mapping && !missingMappingFields(fromSaved(session.mapping), table.headers).length) {
+      if (session?.mapping && mappingFits(fromSaved(session.mapping), table.headers)) {
         chosen = fromSaved(session.mapping);
         source = 'The columns from the interrupted import of this file.';
       } else {
@@ -331,15 +347,15 @@ function App() {
       setError(`Recovery check failed: ${err.message}`);
     }
     if (!chosen) {
-      chosen = guessMapping(table.headers);
+      chosen = guessMapping(table.headers, fields);
       source = missingMappingFields(chosen, table.headers).length ? '' : 'Matched automatically from the column names.';
     }
     setMapping(chosen);
     setMappingSource(source);
-    if (!missingMappingFields(chosen, table.headers).length) await previewWith(table, chosen, session);
+    if (!missingMappingFields(chosen, table.headers).length) await previewWith(table, chosen, session, fields);
   }
 
-  async function previewWith(table, chosen, session) {
+  async function previewWith(table, chosen, session, fields = detailFields) {
     setError('');
     setComparisonProgress(null);
     setImportProgress(null);
@@ -348,15 +364,16 @@ function App() {
     setAppliedMapping(chosen);
     setConfirmingImport(false);
     setTypedConfirmation('');
-    const parsedRows = applyMapping(table, chosen);
+    // Detail values are checked against each field's type and options; a bad cell excludes the row.
+    const { rows: parsedRows, errors: detailErrors } = checkDetails(applyMapping(table, chosen), fields);
     setRows(parsedRows);
     try {
       if (parsedRows.length > 500) {
-        const result = validateRowsLocally(parsedRows);
+        const result = mergeValidation(validateRowsLocally(parsedRows), detailErrors);
         setValidation(result);
         await buildLargePreview(parsedRows, result);
       } else {
-        const result = await invoke('validateImport', { rows: parsedRows });
+        const result = mergeValidation(await invoke('validateImport', { rows: parsedRows.map(({ details, ...row }) => row) }), detailErrors);
         setValidation(result);
         await buildPreview(parsedRows, result);
       }
@@ -393,6 +410,7 @@ function App() {
     const chunk = plan.chunks[batchIndex];
     const batchNumber = batchIndex + 1;
     let lastError;
+    let limitWaits = 0;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       setImportProgress({
         state: 'running',
@@ -409,6 +427,25 @@ function App() {
         return await submitAndFinaliseBatch(invoke, plan, batchIndex);
       } catch (e) {
         lastError = e;
+        // Jira is still working through earlier tasks: wait a minute and try the same batch again. This
+        // doesn't use up an attempt; after an hour the import pauses and can be resumed later.
+        if (isTaskLimitError(e) && limitWaits < TASK_LIMIT_WAIT.maxWaits) {
+          limitWaits += 1;
+          attempt -= 1;
+          setImportProgress({
+            state: 'waiting',
+            sessionId: plan.sessionId,
+            totalRows: plan.totalRows,
+            totalBatches: plan.chunks.length,
+            completedBatches: batchIndex,
+            completedRows: Math.min(batchIndex * 100, plan.totalRows),
+            currentBatch: batchNumber,
+            waited: limitWaits,
+            maxWaits: TASK_LIMIT_WAIT.maxWaits
+          });
+          await new Promise((resolve) => setTimeout(resolve, TASK_LIMIT_WAIT.intervalMs));
+          continue;
+        }
         if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
       }
     }
@@ -586,6 +623,7 @@ function App() {
   const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', RUNNING: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
   const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
+  const previewHasDetails = useMemo(() => preview.some((r) => detailCount(r) > 0), [preview]);
   const impact = useMemo(() => importImpact(preview), [preview]);
   const safeguard = useMemo(() => importSafeguard(impact), [impact]);
   const deskName = serviceDesks.find((d) => String(d.id) === String(desk))?.projectName || 'the selected service project';
@@ -641,11 +679,13 @@ function App() {
             {!csvTable.headers.length && <Notice kind="error" title="This file has no header row">The first row must name the columns, for example Email, Full Name, Organisation.</Notice>}
             {csvTable.headers.length > 0 && missingMappingFields(mapping, csvTable.headers).length > 0 && <Notice kind="warning" title="Choose the columns to import">Pick the column for {missingMappingFields(mapping, csvTable.headers).join(' and ')}. The preview starts once they're chosen.</Notice>}
             {mappingMessage && <Notice kind={mappingMessage.kind}>{mappingMessage.text}</Notice>}
+            {detailFieldsError && <Notice kind="warning" title="Customer details couldn't be loaded">{detailFieldsError} You can still import names, emails and organisations.</Notice>}
             <div className="nq-grid nq-grid--3">
-              {MAPPING_FIELDS.map(({ key, label, required }) => {
+              {MAPPING_FIELDS.filter(({ key }) => !(mapping.displayName && (key === 'firstName' || key === 'lastName'))).map(({ key, label, required }) => {
                 const col = csvTable.headers.indexOf(mapping[key]);
                 const sample = col >= 0 ? (csvTable.records.find((r) => r[col]) || [])[col] : '';
-                return <Field key={key} label={label} required={required} htmlFor={`map-${key}`} help={sample ? `e.g. ${sample}` : (required ? 'Required' : 'Optional')}>
+                const nameHelp = key === 'displayName' ? 'Or leave this and choose First name and Last name' : (key === 'firstName' || key === 'lastName') ? 'Joined with a space to make the full name' : '';
+                return <Field key={key} label={label} required={required} htmlFor={`map-${key}`} help={sample ? `e.g. ${sample}` : (nameHelp || (required ? 'Required' : 'Optional'))}>
                   <select id={`map-${key}`} className="nq-select" value={mapping[key] || ''} onChange={(e) => { setMapping((m) => ({ ...m, [key]: e.target.value })); setMappingSource(''); }}>
                     <option value="">{required ? 'Choose a column…' : 'Not in this file'}</option>
                     {csvTable.headers.map((h) => <option key={h} value={h}>{h}</option>)}
@@ -653,11 +693,29 @@ function App() {
                 </Field>;
               })}
             </div>
+            {detailFields.length > 0 && <>
+              <h3 className="nq-card__title">Customer details</h3>
+              <p className="nq-help">Values are checked against each field's type and options. A blank cell leaves the customer's current value unchanged.</p>
+              <div className="nq-grid nq-grid--3">
+                {detailFields.map((f) => {
+                  const column = mapping.details?.[f.name] || '';
+                  const col = csvTable.headers.indexOf(column);
+                  const sample = col >= 0 ? (csvTable.records.find((r) => r[col]) || [])[col] : '';
+                  const kind = { SELECT: 'Single choice', MULTISELECT: 'Multiple choice (separate with ;)', NUMBER: 'Number', EMAIL: 'Email', URL: 'Web address' }[f.type] || 'Text';
+                  return <Field key={f.name} label={f.name} htmlFor={`map-detail-${f.name}`} help={sample ? `e.g. ${sample}` : kind}>
+                    <select id={`map-detail-${f.name}`} className="nq-select" value={column} onChange={(e) => { const value = e.target.value; setMapping((m) => { const details = { ...(m.details || {}) }; if (value) details[f.name] = value; else delete details[f.name]; return { ...m, details }; }); setMappingSource(''); }}>
+                      <option value="">Not imported</option>
+                      {csvTable.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </Field>;
+                })}
+              </div>
+            </>}
             <div className="nq-grid nq-grid--3">
               <div>
                 {savedMappings.length > 0 ? <select className="nq-select" aria-label="Use a saved mapping" value="" onChange={(e) => { const m = savedMappings.find((x) => x.id === e.target.value); if (m) { setMapping(fromSaved(m)); setMappingSource(`Using the saved mapping "${m.name}".`); setMappingName(m.name); } }}>
                   <option value="">Use a saved mapping…</option>
-                  {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={missingMappingFields(fromSaved(m), csvTable.headers).length > 0}>{m.name}{missingMappingFields(fromSaved(m), csvTable.headers).length ? ' (columns not in this file)' : ''}</option>)}
+                  {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={!mappingFits(fromSaved(m), csvTable.headers)}>{m.name}{mappingFits(fromSaved(m), csvTable.headers) ? '' : ' (columns not in this file)'}</option>)}
                 </select> : <p className="nq-help">No saved mappings yet.</p>}
               </div>
               <input className="nq-input" aria-label="Mapping name" placeholder="Name this mapping" value={mappingName} onChange={(e) => setMappingName(e.target.value)}/>
@@ -700,23 +758,28 @@ function App() {
         {previewing && <Loading text="Checking existing Jira customers and organisations…"/>}
 
         {preview.length > 0 && <Card title="Import preview" description={preview.length > 500 ? `Showing the first 500 of ${preview.length.toLocaleString()} rows.` : undefined}>
-          <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table></div>
+          <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th>{previewHasDetails && <th>Customer details</th>}<th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td>{previewHasDetails && <td>{detailSummary(r) || '—'}</td>}<td>{r.reason}</td></tr>)}</tbody></table></div>
         </Card>}
 
-        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
+        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'waiting' ? 'Waiting for Jira' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
           {importProgress.state === 'preparing' && <Loading text={`Preparing organisations and ${plural(importProgress.totalRows, 'customer change')}…`}/>}
           {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
           {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
           {importProgress.state === 'rechecking' && <Loading text={`Waiting for Jira to finish creating ${plural(importProgress.waiting, 'new customer')} before adding them to the project and organisations (check ${importProgress.attempt} of ${importProgress.attempts})…`}/>}
           {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
-          {importProgress.state === 'failed' && <Notice kind="error">Batch {importProgress.currentBatch} failed after three attempts. Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</Notice>}
+          {importProgress.state === 'waiting' && <Loading text={`Jira is still working through earlier import tasks and isn't accepting new ones yet. Batch ${importProgress.currentBatch} will be sent when it does (checked every minute, ${importProgress.waited} of ${importProgress.maxWaits}). Keep this page open.`}/>}
+          {importProgress.state === 'failed' && <Notice kind="error" title={`Batch ${importProgress.currentBatch} wasn't accepted`}>
+            <p>{isTaskLimitError(importProgress.error) ? 'Jira still had too many unfinished import tasks after an hour of waiting. Try Resume later; Jira finishes them in the background.' : `Jira's reply: ${importProgress.error || 'no details'}`}</p>
+            <p>Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</p>
+          </Notice>}
         </Card>}
 
         {confirmingImport && !loading && <Notice kind="warning" title={`Check before importing ${plural(impact.changes, 'customer change')}`}>
           <p>This is a large import ({safeguard.reasons.join(', ')}). It will change {deskName}:</p>
           <ul>
             {impact.create > 0 && <li>{plural(impact.create, 'new customer')} created and added to the project</li>}
-            {impact.update > 0 && <li>{plural(impact.update, 'existing customer')} renamed to the name in the file</li>}
+            {impact.renames > 0 && <li>{plural(impact.renames, 'existing customer')} renamed to the name in the file</li>}
+            {impact.update > impact.renames && <li>{plural(impact.update - impact.renames, 'existing customer')} with customer details updated</li>}
             {impact.newOrganisations.length > 0 && <li>{plural(impact.newOrganisations.length, 'organisation')} created: {impact.newOrganisations.slice(0, 10).join(', ')}{impact.newOrganisations.length > 10 ? `, and ${(impact.newOrganisations.length - 10).toLocaleString()} more` : ''}</li>}
           </ul>
           <p>Jira has no undo for this. Check the preview above first.</p>

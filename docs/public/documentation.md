@@ -29,8 +29,11 @@ The first row must be a header row. The columns can have any names and be in any
 | Field | Required | Notes |
 |---|---|---|
 | Email | Yes | Must be a valid email address. Each email may appear only once. |
-| Full name | Yes | The customer's display name. |
+| Full name | Yes | The customer's display name. Or use a First name and a Last name column; they are joined with a space. |
+| First name, Last name | No | Used for the full name when there is no Full name column. |
 | Organisation | No | The organisation to add the customer to. It's created if it doesn't exist. |
+
+You can also fill in your **customer details** (the fields under *Customer details* in Jira Service Management, such as a crew code or base). Each detail field can take its value from a column.
 
 Save as UTF-8 CSV. Other columns are ignored. Quoted values may contain commas and line breaks. Files of 16,000+ rows are supported.
 
@@ -43,12 +46,21 @@ When you choose a file, the **Column mapping** card shows which column the app w
 - To reuse a layout (for example a monthly export from another system), type a name and click **Save mapping**. Next time you choose a file with those columns, the saved mapping is used automatically. You can also pick one from **Use a saved mapping**.
 - If you resume an interrupted import, the same columns are used again.
 
+### Customer details
+
+If your site has customer detail fields, they are listed under **Customer details** in the Column mapping card, each set to *Not imported*. Columns named like a field (for example *Crew code* for *CrewCode*) are chosen automatically.
+
+- Values are checked before import. A single-choice field must match one of its options (capitals don't matter). For a multiple-choice field, separate values with `;`. A number field must be a number.
+- A row with a value that doesn't fit is shown as an **Error** with the reason, and left out.
+- **A blank cell leaves the customer's current value unchanged.** The app never clears a detail.
+- Saved mappings remember the detail columns too.
+
 ### 2. Preview
 
 On the **Import** tab, choose the CSV file. Nothing changes in Jira at this point. The app checks every row against Jira and marks it:
 
 - **Create**: a new customer will be created.
-- **Update**: the customer exists and their display name will change.
+- **Update**: the customer exists and their display name will change, or the row sets customer details.
 - **Skip**: the customer already matches Jira.
 - **Error**: the row is invalid and will be left out. The reason is shown, and the rest of the file can still be imported.
 
