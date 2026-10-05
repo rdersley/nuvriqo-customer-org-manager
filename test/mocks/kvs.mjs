@@ -30,16 +30,17 @@ export const kvs = {
   query() {
     let condition = null;
     let max = 20;
+    let offset = 0;
     const q = {
       where(_field, cond) { condition = cond; return q; },
       limit(n) { max = n; return q; },
+      cursor(c) { offset = Number(c) || 0; return q; },
       async getMany() {
-        const results = [...store.entries()]
+        const matching = [...store.entries()]
           .filter(([key]) => !condition || key.startsWith(condition.prefix))
-          .sort(([a], [b]) => a.localeCompare(b))
-          .slice(0, max)
-          .map(([key, value]) => ({ key, value: structuredClone(value) }));
-        return { results };
+          .sort(([a], [b]) => a.localeCompare(b));
+        const results = matching.slice(offset, offset + max).map(([key, value]) => ({ key, value: structuredClone(value) }));
+        return offset + max < matching.length ? { results, nextCursor: String(offset + max) } : { results };
       }
     };
     return q;
