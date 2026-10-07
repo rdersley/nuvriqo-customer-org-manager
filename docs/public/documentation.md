@@ -123,6 +123,16 @@ In **Sync health**, click **Check tickets**. The app checks every ticket in the 
 
 **Recent corrections** lists every change the app made in the last 90 days.
 
+## Ticket details
+
+Copies a reporter's customer details (for example **CrewCode** and **Base**) into fields on their tickets, so you can use them in queues, filters and reports.
+
+- **Set it up:** choose the service projects, then add a row for each customer detail and the ticket field to fill (a text or single-select custom field). Under **Values to replace**, list placeholder values that should be treated as empty, for example `Unknown, Please Update`.
+- **What it changes:** a ticket field is filled when it's empty or holds one of those placeholders. Any other value already on the ticket is kept. For a select field the value must be one of its options; if it isn't, the ticket is listed with the reason.
+- **New tickets:** with **Fill in new tickets automatically** on, a new ticket (or one whose reporter changes) is filled within seconds.
+- **Existing tickets:** **Check tickets** lists what would change without changing anything. **Fill in** then updates them, re-checking each ticket first. Every change shows in the ticket's history.
+- **Recent changes** lists the tickets the app filled in over the last 90 days (field names only, not values).
+
 ## Licence
 
 Without an active licence the app is read-only: you can browse and preview, but importing is turned off until a licence or trial is active.
