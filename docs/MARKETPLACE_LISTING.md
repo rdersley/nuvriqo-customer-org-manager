@@ -88,7 +88,8 @@ The questionnaire ignores automated input, so an administrator types these in by
 > read:task:jira-service-management reads the status of those bulk tasks (/jsm/csm/api/v1/tasks/{id}) for the Import History view.
 > read:customer.detail-field:jira-service-management lists the site's customer detail field definitions (/jsm/csm/api/v1/customer/details) so the importer can map CSV columns to them and check values against each field's type and options.
 > write:customer.detail:jira-service-management sets an imported customer's detail values (PUT /jsm/csm/api/v1/customer/{id}/details). The importer creates customers with POST /rest/servicedeskapi/customer and sets their details one customer at a time, several in parallel, because the queued bulk API took about 8 minutes per 100 customers on a live site. The bulk API is still used for a changed name on an existing customer.
-> read:customer.detail:jira-service-management reads a ticket reporter's customer detail values (GET /jsm/csm/api/v1/customer/{id}/details) for Ticket details, which copies chosen details into ticket fields on new tickets in selected projects (as the app, from the issue trigger) or in a confirmed bulk update (as the admin). write:jira-work sets those ticket fields.
+> read:customer.detail:jira-service-management reads a ticket reporter's customer detail values (GET /jsm/csm/api/v1/customer/{id}) for Ticket details, which copies chosen details into ticket fields on new tickets in selected projects (as the app, from the issue trigger) or in a confirmed bulk update (as the admin). write:jira-work sets those ticket fields.
+> read:customer:jira-service-management is required together with read:customer.detail by that same customer read (GET /jsm/csm/api/v1/customer/{id}).
 
 ### More Privacy & Security answers
 

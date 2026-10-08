@@ -43,6 +43,7 @@ Every request is checked on the server for the **Administer Jira** permission. T
 | `read:customer.detail-field:jira-service-management` | Listing your customer detail fields so an import can fill them in |
 | `write:customer.detail:jira-service-management` | Setting imported customers' detail values |
 | `read:customer.detail:jira-service-management` | Reading a ticket reporter's customer details to fill ticket fields (Ticket details) |
+| `read:customer:jira-service-management` | Reading the ticket reporter as a customer, together with the permission above |
 
 ## Uninstalling
 
